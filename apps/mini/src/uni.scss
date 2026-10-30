@@ -1,0 +1,37 @@
+/* 拼豆 Design Tokens — 对齐 pindou-html/css/styles.css */
+$brand: #FF6B5B;
+$brand-dark: #E85545;
+$brand-soft: #FFE8E4;
+$brand-lighter: #FFF5F3;
+$warm: #FFB088;
+$warm-soft: #FFF0E6;
+$accent-yellow: #FFD166;
+$accent-mint: #7BDFF2;
+$accent-lilac: #C9B1FF;
+$ink: #2C2A29;
+$ink-2: #5A5552;
+$ink-3: #8A847F;
+$line: #EDE7E2;
+$bg: #F7F3F0;
+$card: #FFFFFF;
+$success: #4CAF7A;
+$radius: 16px;
+$radius-sm: 10px;
+$radius-pill: 999px;
+$font: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+
+:root,
+page {
+  --brand: #{$brand};
+  --brand-dark: #{$brand-dark};
+  --brand-soft: #{$brand-soft};
+  --brand-lighter: #{$brand-lighter};
+  --warm: #{$warm};
+  --ink: #{$ink};
+  --ink-2: #{$ink-2};
+  --ink-3: #{$ink-3};
+  --line: #{$line};
+  --bg: #{$bg};
+  --card: #{$card};
+  --success: #{$success};
+}

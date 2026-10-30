@@ -1,0 +1,29 @@
+{
+  "name": "pindou-mini",
+  "version": "0.1.0",
+  "private": true,
+  "description": "拼豆 · uni-app Vue3 + TS 小程序骨架",
+  "scripts": {
+    "dev:h5": "uni",
+    "build:h5": "uni build",
+    "dev:mp-weixin": "uni -p mp-weixin",
+    "build:mp-weixin": "uni build -p mp-weixin",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "pinia": "^2.2.6",
+    "vue": "^3.4.21"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "^3.4.8",
+    "@dcloudio/vite-plugin-uni": "^3.0.0-alpha-4020420240930001",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vue-tsc": "^2.1.10"
+  },
+  "optionalDependencies": {},
+  "comments": {
+    "ui": "可选 UI：wot-design-uni（安装后在 main.ts 引入）",
+    "note": "当前为手写最小结构；用 HBuilderX 打开本目录，或 npm i 后接 @dcloudio/vite-plugin-uni"
+  }
+}

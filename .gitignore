@@ -1,0 +1,20 @@
+# Rust
+**/target/
+**/*.rs.bk
+
+# Node / uni-app
+**/node_modules/
+**/dist/
+**/unpackage/
+.DS_Store
+*.log
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Zip artifacts（仓库外交付）
+*.zip
