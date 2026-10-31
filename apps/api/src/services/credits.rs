@@ -1,7 +1,6 @@
-//! 积分：日领（Redis 幂等）/ 广告 / 出稿扣减 / 示意充值。
+//! 积分：日领（PostgreSQL 幂等）/ 广告 / 出稿扣减 / 示意充值。
 
-use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDate, TimeZone, Utc};
-use redis::AsyncCommands;
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -95,23 +94,8 @@ pub fn china_today() -> NaiveDate {
     Utc::now().with_timezone(&china_offset()).date_naive()
 }
 
-pub fn daily_claim_key(user_id: Uuid, day: NaiveDate) -> String {
-    format!("pindou:daily:{user_id}:{day}")
-}
-
 fn china_offset() -> FixedOffset {
     FixedOffset::east_opt(8 * 3600).expect("offset")
-}
-
-fn seconds_until_china_midnight() -> u64 {
-    let offset = china_offset();
-    let now = Utc::now().with_timezone(&offset);
-    let tomorrow = now.date_naive() + Duration::days(1);
-    let next = offset
-        .with_ymd_and_hms(tomorrow.year(), tomorrow.month(), tomorrow.day(), 0, 0, 5)
-        .single()
-        .unwrap_or_else(|| now + Duration::hours(24));
-    (next - now).num_seconds().max(120) as u64
 }
 
 pub fn reason_label(reason: &str) -> &'static str {
@@ -138,32 +122,12 @@ pub async fn view(state: &AppState, user_id: Uuid) -> AppResult<CreditsView> {
 
 pub async fn daily_claim(state: &AppState, user_id: Uuid) -> AppResult<CreditMutation> {
     let day = china_today();
-    let key = daily_claim_key(user_id, day);
-    let ttl = seconds_until_china_midnight();
-
-    if !redis_set_nx(&state.redis, &key, ttl).await? {
-        return Err(AppError::conflict(
-            "already_claimed",
-            "今日已领取，明天再来吧",
-        ));
-    }
-
-    match grant_daily_in_db(state, user_id, day).await {
-        Ok(balance) => Ok(CreditMutation {
-            balance,
-            delta: DAILY_GRANT,
-            reason: "daily_claim".into(),
-        }),
-        Err(AppError::Conflict { .. }) => Err(AppError::conflict(
-            "already_claimed",
-            "今日已领取，明天再来吧",
-        )),
-        Err(err) => {
-            let mut redis = state.redis.clone();
-            let _: Result<(), _> = redis.del(&key).await;
-            Err(err)
-        }
-    }
+    let balance = grant_daily_in_db(state, user_id, day).await?;
+    Ok(CreditMutation {
+        balance,
+        delta: DAILY_GRANT,
+        reason: "daily_claim".into(),
+    })
 }
 
 async fn grant_daily_in_db(state: &AppState, user_id: Uuid, day: NaiveDate) -> AppResult<i32> {
@@ -362,24 +326,6 @@ async fn claimed_today(pool: &PgPool, user_id: Uuid, day: NaiveDate) -> AppResul
     .fetch_one(pool)
     .await?;
     Ok(exists)
-}
-
-async fn redis_set_nx(
-    redis: &redis::aio::ConnectionManager,
-    key: &str,
-    ttl_secs: u64,
-) -> AppResult<bool> {
-    let mut conn = redis.clone();
-    let res: Option<String> = redis::cmd("SET")
-        .arg(key)
-        .arg("1")
-        .arg("NX")
-        .arg("EX")
-        .arg(ttl_secs)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| AppError::ServiceUnavailable(format!("积分服务暂不可用（Redis）：{e}")))?;
-    Ok(res.as_deref() == Some("OK"))
 }
 
 fn order_view(id: Uuid, pack: &Pack, status: &str) -> OrderView {

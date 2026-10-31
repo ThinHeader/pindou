@@ -1,4 +1,4 @@
-# 拼豆本地开发依赖：PostgreSQL 16 + Redis 7
+# 拼豆本地开发依赖：PostgreSQL 16
 # 启动：docker compose up -d
 # 停止：docker compose down
 
@@ -21,20 +21,5 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7
-    container_name: pindou-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - pindou_redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
 volumes:
   pindou_pg_data:
-  pindou_redis_data:
