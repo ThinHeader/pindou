@@ -27,7 +27,7 @@ CREATE TABLE credit_ledger (
 
 CREATE INDEX credit_ledger_user_created ON credit_ledger (user_id, created_at DESC);
 
--- 日领取的数据库兜底（与 Redis SET NX 一起保证一天一次）
+-- 日领取幂等：PRIMARY KEY (user_id, claim_date)，同一东八区自然日只能插入一次
 CREATE TABLE daily_claims (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     claim_date DATE NOT NULL,

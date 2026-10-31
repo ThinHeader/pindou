@@ -1,6 +1,6 @@
 //! 拼豆 API。
 //!
-//! 启动时连接 PostgreSQL / Redis、执行 SQL migration，并写入官方模板种子数据。
+//! 启动时连接 PostgreSQL、执行 SQL migration，并写入官方模板种子数据。
 
 mod config;
 mod error;
@@ -20,7 +20,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 pub use config::Config;
-pub use services::credits::{china_today, daily_claim_key};
+pub use services::credits::china_today;
 pub use state::AppState;
 
 /// 连接依赖、迁移、种子数据。
@@ -42,12 +42,6 @@ pub async fn connect(config: &Config) -> anyhow::Result<AppState> {
         .await
         .context("执行 SQL migration 失败")?;
 
-    let redis_client =
-        redis::Client::open(config.redis_url.as_str()).with_context(|| "Redis URL 无效")?;
-    let redis = redis::aio::ConnectionManager::new(redis_client)
-        .await
-        .context("连接 Redis 失败")?;
-
     let storage = Arc::new(
         services::storage::LocalStorage::new(&config.storage_dir, &config.public_base_url)
             .context("初始化本地对象存储失败")?,
@@ -56,7 +50,6 @@ pub async fn connect(config: &Config) -> anyhow::Result<AppState> {
     let state = AppState {
         config: Arc::new(config.clone()),
         db: pool,
-        redis,
         storage,
     };
 

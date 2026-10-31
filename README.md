@@ -1,6 +1,6 @@
 # 拼豆（pindou）
 
-微信小程序「拼豆」可运行 MVP：uni-app Vue3 + TypeScript + Pinia，Rust axum + PostgreSQL + Redis。
+微信小程序「拼豆」可运行 MVP：uni-app Vue3 + TypeScript + Pinia，Rust axum + PostgreSQL。
 
 拍照或选一张图，按 52 / 78 / 104 珠板和色数生成色号稿；积分规则是每日 +3、成功出稿 −1、激励广告 +1。广场可以点赞、收藏、评论。
 
@@ -10,7 +10,7 @@
 
 ```
 README.md
-docker-compose.yml          # postgres:16 + redis:7
+docker-compose.yml          # postgres:16
 rust-toolchain.toml         # Rust 1.99
 apps/mini/                  # uni-app 小程序
 apps/api/                   # axum API、SQL migration、集成测试
@@ -21,7 +21,7 @@ docs/api.md                 # 接口说明
 
 | 动作 | 积分 |
 |------|------|
-| 每日领取 | +3（东八区每天一次，Redis 幂等） |
+| 每日领取 | +3（东八区每天一次，PostgreSQL `daily_claims` 幂等） |
 | 成功出稿 | −1（图片失败不扣） |
 | 激励广告 | +1 |
 | 充值 | 10 / ¥6，35 / ¥18，60 / ¥30（示意下单 + mock 回调） |
@@ -35,9 +35,8 @@ docker compose up -d
 ```
 
 - Postgres：`127.0.0.1:5432`，用户 / 密码 / 库 `pindou` / `pindou_dev` / `pindou`
-- Redis：`127.0.0.1:6379`
 
-没有 Docker 时，本机装同版本的 PostgreSQL 16 和 Redis 7，建同样的账号即可。
+没有 Docker 时，本机装同版本的 PostgreSQL 16，建同样的账号即可。
 
 ## 2. 起 API
 
@@ -64,14 +63,14 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/wx-login \
 
 ## 3. 测试
 
-Postgres 和 Redis 要先起来（和 `cargo run` 同一套 `DATABASE_URL` / `REDIS_URL`）。
+Postgres 要先起来（和 `cargo run` 同一套 `DATABASE_URL`）。
 
 ```bash
 cd apps/api
 cargo test
 ```
 
-覆盖：开发态登录、日领 Redis 幂等、坏图不扣分、色号稿落库、广场点赞评论、示意充值回调、余额不足 402。
+覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、色号稿落库、广场点赞评论、示意充值回调、余额不足 402。
 
 ## 4. 小程序
 

@@ -7,7 +7,6 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub database_url: String,
-    pub redis_url: String,
     pub jwt_secret: String,
     pub wx_appid: String,
     pub wx_secret: String,
@@ -32,7 +31,6 @@ impl Config {
             port,
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgres://pindou:pindou_dev@127.0.0.1:5432/pindou".into()),
-            redis_url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into()),
             jwt_secret: env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "dev-only-jwt-secret-change-me".into()),
             wx_appid: env::var("WX_APPID").unwrap_or_default(),

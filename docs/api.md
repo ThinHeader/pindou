@@ -15,7 +15,6 @@ Base URL（本地）：`http://127.0.0.1:3000`
 | 402 | `insufficient_credits` | 出稿时余额不足 |
 | 404 | `not_found` | 稿件 / 作品 / 订单不存在 |
 | 409 | `already_claimed` | 今日积分已领 |
-| 503 | `unavailable` | Redis 不可用，日领暂停 |
 
 除健康检查、充值档位、广场列表 / 详情 / 评论列表、静态文件外，写操作都要带 `Authorization: Bearer <JWT>`。
 
@@ -61,7 +60,7 @@ Base URL（本地）：`http://127.0.0.1:3000`
 | 激励广告 | +1，可多次 |
 | 示意充值 | 见档位 |
 
-日领用 Redis `SET key NX EX`（键 `pindou:daily:{user}:{日期}`，到期到次日）做幂等，数据库 `daily_claims` 再兜一层。Redis 失败返回 503，不会静默加两次。
+日领在同一事务里向 `daily_claims` 插入 `(user_id, 东八区今日日期)`；主键冲突则返回 409 `already_claimed`，成功则给账户 +3 并写入 `credit_ledger`。不依赖 Redis。
 
 ### `GET /api/v1/credits/me`
 

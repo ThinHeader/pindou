@@ -1,4 +1,4 @@
-//! 核心链路：登录、日领幂等、出稿扣分、广场读写。需要本机 PostgreSQL 与 Redis。
+//! 核心链路：登录、日领幂等、出稿扣分、广场读写。需要本机 PostgreSQL。
 
 use std::io::Cursor;
 
@@ -62,7 +62,7 @@ async fn app() -> axum::Router {
     let config = pindou_api::Config::from_env();
     let state = pindou_api::connect(&config)
         .await
-        .expect("连接 PostgreSQL / Redis 失败，请先启动 docker compose");
+        .expect("连接 PostgreSQL 失败，请先启动 docker compose");
     pindou_api::router(state)
 }
 
@@ -127,7 +127,6 @@ async fn mvp_auth_credits_generate_plaza() {
     assert_eq!(status, StatusCode::OK, "{login}");
     assert_eq!(login["mode"], "dev");
     let token = login["token"].as_str().unwrap();
-    let user_id = Uuid::parse_str(login["user"]["id"].as_str().unwrap()).unwrap();
 
     let (status, again) = call(
         &app,
@@ -158,18 +157,10 @@ async fn mvp_auth_credits_generate_plaza() {
     assert_eq!(claimed["delta"], 3);
     assert_eq!(claimed["reason"], "daily_claim");
 
-    let mut redis = redis::Client::open("redis://127.0.0.1:6379")
-        .unwrap()
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
-    let key = pindou_api::daily_claim_key(user_id, pindou_api::china_today());
-    let flag: Option<String> = redis::cmd("GET")
-        .arg(&key)
-        .query_async(&mut redis)
-        .await
-        .unwrap();
-    assert_eq!(flag.as_deref(), Some("1"), "日领应写入 Redis 幂等键 {key}");
+    let (status, me_after) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "{me_after}");
+    assert_eq!(me_after["daily_claimed_today"], true);
+    assert_eq!(me_after["balance"], 3);
 
     let (status, dup) = call(
         &app,
