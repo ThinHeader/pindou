@@ -119,8 +119,8 @@ function stockSoon() {
 </template>
 
 <style scoped lang="scss">
-.page { padding: 24rpx 32rpx 140rpx; }
-.hello-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16rpx; }
+.page { padding: 24rpx 24rpx 140rpx; }
+.hello-row { display: flex; justify-content: space-between; align-items: flex-start; }
 .hi { display: block; font-size: 26rpx; color: $ink-2; }
 .headline { display: block; margin-top: 8rpx; font-size: 40rpx; font-weight: 800; line-height: 1.3; }
 .cta {
@@ -151,11 +151,10 @@ function stockSoon() {
   color: $ink-2;
 }
 .sico { display: block; font-size: 32rpx; margin-bottom: 6rpx; }
-.stack { display: flex; flex-direction: column; gap: 16rpx; }
+.stack { display: flex; flex-direction: column; }
 .continue {
   display: flex;
   align-items: center;
-  gap: 16rpx;
   background: $card;
   border-radius: 24rpx;
   border: 1rpx solid $line;
@@ -173,9 +172,18 @@ function stockSoon() {
   font-size: 24rpx;
   font-weight: 700;
 }
-.grid { display: flex; flex-wrap: wrap; gap: 16rpx; }
+.grid {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
 .rec {
-  width: calc(50% - 8rpx);
+  flex: 0 0 340rpx;
+  width: 340rpx;
+  max-width: 340rpx;
+  margin-bottom: 16rpx;
+  box-sizing: border-box;
   background: $card;
   border-radius: 24rpx;
   border: 1rpx solid $line;

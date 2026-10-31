@@ -122,7 +122,7 @@ async function removeItem(item: DraftCard) {
       </view>
     </view>
     <view v-else class="empty">这里还是空的</view>
-  </view>
+</view>
 </template>
 
 <style scoped lang="scss">
@@ -139,9 +139,18 @@ async function removeItem(item: DraftCard) {
   border: 1rpx solid $line; color: $ink-2; font-size: 24rpx;
 }
 .pill.on { background: $ink; color: #fff; border-color: $ink; }
-.grid { display: flex; flex-wrap: wrap; gap: 16rpx; }
+.grid {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
 .card {
-  width: calc(50% - 8rpx); background: $card; border-radius: 24rpx;
+  flex: 0 0 340rpx;
+  width: 340rpx;
+  max-width: 340rpx;
+  margin-bottom: 16rpx;
+  box-sizing: border-box; background: $card; border-radius: 24rpx;
   border: 1rpx solid $line; overflow: hidden;
 }
 .thumb { width: 100%; height: 280rpx; background: $brand-lighter; display: block; }

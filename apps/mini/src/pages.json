@@ -2,50 +2,75 @@
   "pages": [
     {
       "path": "pages/home/index",
-      "style": { "navigationBarTitleText": "拼豆", "navigationBarBackgroundColor": "#FFF5F3" }
+      "style": {
+        "navigationBarTitleText": "拼豆",
+        "navigationBarBackgroundColor": "#FFF5F3"
+      }
     },
     {
       "path": "pages/plaza/index",
-      "style": { "navigationBarTitleText": "拼豆广场" }
+      "style": {
+        "navigationBarTitleText": "拼豆广场"
+      }
     },
     {
       "path": "pages/create/index",
-      "style": { "navigationBarTitleText": "出稿" }
+      "style": {
+        "navigationBarTitleText": "出稿"
+      }
     },
     {
       "path": "pages/library/index",
-      "style": { "navigationBarTitleText": "稿件库" }
+      "style": {
+        "navigationBarTitleText": "稿件库"
+      }
     },
     {
       "path": "pages/mine/index",
-      "style": { "navigationBarTitleText": "我的" }
+      "style": {
+        "navigationBarTitleText": "我的"
+      }
     },
     {
       "path": "pages/create/params",
-      "style": { "navigationBarTitleText": "出稿参数" }
+      "style": {
+        "navigationBarTitleText": "出稿参数"
+      }
     },
     {
       "path": "pages/create/preview",
-      "style": { "navigationBarTitleText": "生成预览" }
+      "style": {
+        "navigationBarTitleText": "生成预览"
+      }
     },
     {
       "path": "pages/credits/index",
-      "style": { "navigationBarTitleText": "充值积分" }
+      "style": {
+        "navigationBarTitleText": "充值积分"
+      }
     },
     {
       "path": "pages/draft/detail",
-      "style": { "navigationBarTitleText": "稿件详情" }
+      "style": {
+        "navigationBarTitleText": "稿件详情"
+      }
     },
     {
       "path": "pages/work/detail",
-      "style": { "navigationBarTitleText": "作品详情" }
+      "style": {
+        "navigationBarTitleText": "作品详情"
+      }
     },
     {
       "path": "pages/login/index",
-      "style": { "navigationBarTitleText": "登录", "navigationStyle": "custom" }
+      "style": {
+        "navigationBarTitleText": "登录",
+        "navigationStyle": "custom"
+      }
     }
   ],
   "tabBar": {
+    "custom": false,
     "color": "#8A847F",
     "selectedColor": "#FF6B5B",
     "backgroundColor": "#FFFFFF",
