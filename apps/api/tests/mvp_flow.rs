@@ -59,11 +59,48 @@ fn base64_std(bytes: &[u8]) -> String {
 }
 
 async fn app() -> axum::Router {
-    let config = pindou_api::Config::from_env();
+    let mut config = pindou_api::Config::from_env();
+    // 集成测试不访问阿里云，即使本机配了密钥也走模拟管线。
+    config.pipeline_provider = "mock".into();
     let state = pindou_api::connect(&config)
         .await
         .expect("连接 PostgreSQL 失败，请先启动 docker compose");
     pindou_api::router(state)
+}
+
+/// 出稿改为异步任务：提交后轮询到 done。失败会把最后一帧打出来。
+async fn generate_done(app: &axum::Router, token: &str, body: Value) -> Value {
+    let (status, started) = call(
+        app,
+        "POST",
+        "/api/v1/drafts/generate",
+        Some(token),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let job_id = started["job_id"].as_str().expect("job_id").to_string();
+    let mut last = started;
+    for _ in 0..80 {
+        let st = last["status"].as_str().unwrap_or("");
+        if st == "done" || st == "failed" || st == "cancelled" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let (status, job) = call(
+            app,
+            "GET",
+            &format!("/api/v1/jobs/{job_id}"),
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{job}");
+        last = job;
+    }
+    assert_eq!(last["status"], "done", "{last}");
+    assert_eq!(last["charged"], true, "{last}");
+    last
 }
 
 async fn call(
@@ -212,23 +249,40 @@ async fn mvp_auth_credits_generate_plaza() {
     let (_status, still) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
     assert_eq!(still["balance"], 3, "失败出稿不应扣分 {still}");
 
-    let (status, generated) = call(
+    let generated = generate_done(
         &app,
-        "POST",
-        "/api/v1/drafts/generate",
-        Some(token),
-        Some(json!({
+        token,
+        json!({
             "image_base64": png_base64(),
             "board_size": 52,
             "color_count": 8,
             "palette_pref": "auto",
             "title": "集成测试稿"
-        })),
+        }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{generated}");
-    assert_eq!(generated["status"], "ready");
     assert_eq!(generated["balance"], 2);
+    assert_eq!(generated["provider"], "mock");
+    assert_eq!(generated["draft"]["pipeline"], "mvp_plus");
+    assert!(generated["original_url"]
+        .as_str()
+        .unwrap()
+        .contains("/files/"));
+    assert!(generated["matted_url"]
+        .as_str()
+        .unwrap()
+        .contains("/files/"));
+    assert!(generated["cartoon_url"]
+        .as_str()
+        .unwrap()
+        .contains("/files/"));
+    let stage_ids: Vec<&str> = generated["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|stage| stage["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(stage_ids, ["upload", "matting", "cartoon", "pixel"]);
     assert!(generated["draft"]["palette"].as_array().unwrap().len() >= 1);
     assert!(generated["draft"]["palette"].as_array().unwrap().len() <= 8);
     assert_eq!(generated["draft"]["peg_count"], 52 * 52);
@@ -428,20 +482,17 @@ async fn draft_title_rename_and_delete() {
     assert_eq!(status, StatusCode::OK, "{balance}");
     assert_eq!(balance["balance"], 3, "非法标题不应扣分");
 
-    let (status, unnamed) = call(
+    let unnamed = generate_done(
         &app,
-        "POST",
-        "/api/v1/drafts/generate",
-        Some(token),
-        Some(json!({
+        token,
+        json!({
             "image_base64": png_base64(),
             "board_size": 52,
             "color_count": 4,
             "title": "   "
-        })),
+        }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{unnamed}");
     assert_eq!(unnamed["draft"]["title"], "未命名草稿");
     assert_eq!(unnamed["balance"], 2);
     let draft_id = unnamed["draft"]["id"].as_str().unwrap();
@@ -605,20 +656,17 @@ async fn draft_title_rename_and_delete() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{gone_work}");
 
-    let (status, second) = call(
+    let second = generate_done(
         &app,
-        "POST",
-        "/api/v1/drafts/generate",
-        Some(token),
-        Some(json!({
+        token,
+        json!({
             "image_base64": png_base64(),
             "board_size": 52,
             "color_count": 4,
             "title": "  第二张  "
-        })),
+        }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{second}");
     assert_eq!(second["draft"]["title"], "第二张");
     assert_eq!(second["balance"], 1);
     let second_id = second["draft"]["id"].as_str().unwrap();
@@ -655,15 +703,12 @@ async fn draft_title_rename_and_delete() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{gone_second}");
 
-    let (status, builtin) = call(
+    let builtin = generate_done(
         &app,
-        "POST",
-        "/api/v1/drafts/generate",
-        Some(token),
-        Some(json!({ "image_ref": "builtin:cat", "board_size": 52, "color_count": 6 })),
+        token,
+        json!({ "image_ref": "builtin:cat", "board_size": 52, "color_count": 6 }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{builtin}");
     assert_eq!(builtin["draft"]["title"], "小橘猫吐舌");
     assert_eq!(builtin["balance"], 0);
     let builtin_id = builtin["draft"]["id"].as_str().unwrap();
@@ -678,4 +723,150 @@ async fn draft_title_rename_and_delete() {
     assert_eq!(status, StatusCode::OK, "{only_draft}");
     assert_eq!(only_draft["deleted"], true);
     assert_eq!(only_draft["work_deleted"], false);
+}
+
+async fn get_bytes(app: &axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
+    let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, bytes.to_vec())
+}
+
+#[tokio::test]
+async fn mvp_plus_mock_pipeline_tags_and_skip_matting() {
+    let app = app().await;
+    let code = format!("mock:pipe-{}", Uuid::new_v4());
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    let token = login["token"].as_str().unwrap();
+    let (status, claimed) = call(
+        &app,
+        "POST",
+        "/api/v1/credits/daily-claim",
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+
+    let job = generate_done(
+        &app,
+        token,
+        json!({
+            "image_base64": png_base64(),
+            "board_size": 52,
+            "color_count": 8,
+            "palette_pref": "warm",
+            "remove_bg": true,
+            "cartoon_strength": "strong",
+            "subject_type": "pet",
+            "palette_brand": "shop",
+            "title": "管线稿"
+        }),
+    )
+    .await;
+    assert_eq!(job["provider"], "mock");
+    assert_eq!(job["balance"], 2);
+    let tags = job["draft"]["pipeline_tags"].as_array().unwrap();
+    let tag_text: Vec<&str> = tags.iter().filter_map(|item| item.as_str()).collect();
+    assert!(tag_text.contains(&"智能去背"), "{tag_text:?}");
+    assert!(tag_text.contains(&"卡通 · 强"), "{tag_text:?}");
+    assert!(tag_text.contains(&"拼豆量化"), "{tag_text:?}");
+    assert!(tag_text.contains(&"宠物"), "{tag_text:?}");
+    let lines = job["draft"]["pipeline_lines"].as_array().unwrap();
+    assert!(lines
+        .iter()
+        .any(|line| line.as_str().unwrap_or("").contains("开发模拟抠图")));
+    assert!(lines
+        .iter()
+        .any(|line| line.as_str().unwrap_or("").contains("店内色卡")));
+    let shop = ["A1", "B3", "C2", "D1", "K9", "E4", "E7", "W0", "F1", "H1"];
+    for swatch in job["draft"]["palette"].as_array().unwrap() {
+        let code = swatch["code"].as_str().unwrap();
+        assert!(shop.contains(&code), "{code}");
+    }
+    let cartoon_url = job["cartoon_url"].as_str().unwrap();
+    let path = cartoon_url.split("/files/").nth(1).unwrap();
+    let (status, bytes) = get_bytes(&app, &format!("/files/{path}")).await;
+    assert_eq!(status, StatusCode::OK, "{cartoon_url}");
+    assert!(bytes.starts_with(b"\x89PNG"));
+
+    let plain = generate_done(
+        &app,
+        token,
+        json!({
+            "image_ref": "builtin:bear",
+            "board_size": 52,
+            "color_count": 6,
+            "remove_bg": false,
+            "cartoon_strength": "light",
+            "subject_type": "object"
+        }),
+    )
+    .await;
+    assert!(plain["matted_url"].is_null(), "{plain}");
+    assert!(plain["cartoon_url"].as_str().is_some());
+    assert_eq!(plain["balance"], 1);
+    let states: Vec<&str> = plain["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|stage| stage["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states[1], "skipped", "{states:?}");
+
+    let job_id = plain["job_id"].as_str().unwrap();
+    let other = format!("mock:pipe-other-{}", Uuid::new_v4());
+    let (status, other_login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": other })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{other_login}");
+    let other_token = other_login["token"].as_str().unwrap();
+    let (status, hidden) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/jobs/{job_id}"),
+        Some(other_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{hidden}");
+
+    let (status, missing) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/jobs/{}/cancel", Uuid::new_v4()),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+
+    let (status, kept) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/jobs/{job_id}/cancel"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(
+        kept["status"], "done",
+        "已完成的任务取消后仍是完成态 {kept}"
+    );
+    assert_eq!(kept["charged"], true);
 }

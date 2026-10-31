@@ -84,7 +84,7 @@ function goLibrary() {
     <view class="top">
       <view>
         <text class="title">出稿</text>
-        <text class="sub">积分 {{ credits.balance }} · 出稿消耗 {{ credits.generateCost }}</text>
+        <text class="sub">积分 {{ credits.balance }} · 出稿 −{{ credits.generateCost }}</text>
       </view>
       <CreditPill compact />
     </view>
@@ -94,18 +94,28 @@ function goLibrary() {
     <view class="pixels">
       <view v-for="c in ['#FF6B5B', '#FFB088', '#FFD166', '#7BDFF2', '#C9B1FF']" :key="c" class="px" :style="{ background: c }" />
     </view>
-    <text class="lead">上传一张图片，一键变成可拼的色号稿</text>
+    <view class="pipe">
+      <text class="badge">MVP+</text>
+      <view>
+        <text class="pipe-h">智能去背+卡通再拼豆</text>
+        <text class="pipe-s">阿里抠图 → 人物动漫化 → 自研像素/色板</text>
+      </view>
+    </view>
+    <text class="lead">选择一张照片，人像 / 宠物 / 静物都行</text>
 
     <view class="upload">
       <text class="big">📷</text>
-      <text class="h">添加参考图</text>
-      <text class="p">支持 JPG / PNG · 建议主体清晰、背景简洁</text>
+      <text class="h">选择一张照片</text>
+      <text class="p">人像 / 宠物 / 静物都行 · 主体清晰更出彩</text>
       <view class="actions">
-        <view class="btn primary" @click="pick('camera')">拍照</view>
+        <view class="btn primary" @click="pick('camera')">拍照出稿</view>
         <view class="btn ghost" @click="pick('album')">从相册选择</view>
       </view>
       <view class="sample" @click="useSample">没有照片？用示例图试试</view>
-      <text class="tip">每次成功出稿消耗 1 积分</text>
+      <text class="tip">一次出稿扣 1 积分 · 含去背、卡通与拼豆量化</text>
+    </view>
+    <view class="mini-pipe">
+      <text>① 去背</text><text class="sep">→</text><text>② 卡通</text><text class="sep">→</text><text>③ 拼豆</text>
     </view>
 
     <view class="sec-title">
@@ -122,9 +132,9 @@ function goLibrary() {
 
     <view class="sec-title"><text>出稿小贴士</text></view>
     <view class="tips">
-      <text>· 主体居中、光线均匀，生成更干净</text>
-      <text>· 色数越少越适合新手开拼</text>
-      <text>· 52×52 约 13.5cm · 78×78 约 20cm · 104×104 约 27cm</text>
+      <text>· 默认智能去背，杂乱背景也能干净出稿</text>
+      <text>· 卡通强度可调：标准更像拼豆插画</text>
+      <text>· 52×52 约 13.5cm · 新手友好</text>
     </view>
     <CreditEmptySheet />
   </view>
@@ -145,7 +155,23 @@ function goLibrary() {
 }
 .pixels { display: flex; gap: 10rpx; justify-content: center; margin: 28rpx 0 12rpx; }
 .px { width: 22rpx; height: 22rpx; border-radius: 6rpx; }
-.lead { display: block; text-align: center; color: $ink-2; font-size: 26rpx; margin-bottom: 20rpx; }
+.pipe {
+  display: flex; gap: 16rpx; align-items: center;
+  margin-top: 20rpx; background: $card; border: 1rpx solid $line;
+  border-radius: 20rpx; padding: 18rpx 20rpx;
+}
+.badge {
+  background: $brand; color: #fff; font-size: 20rpx; font-weight: 800;
+  border-radius: 10rpx; padding: 6rpx 10rpx;
+}
+.pipe-h { display: block; font-weight: 750; font-size: 26rpx; }
+.pipe-s { display: block; margin-top: 4rpx; color: $ink-3; font-size: 22rpx; }
+.lead { display: block; text-align: center; color: $ink-2; font-size: 26rpx; margin: 20rpx 0; }
+.mini-pipe {
+  display: flex; justify-content: center; gap: 12rpx; margin: 16rpx 0 8rpx;
+  color: $ink-2; font-size: 24rpx;
+}
+.sep { color: $ink-3; }
 .upload {
   background: $card;
   border: 2rpx dashed #F0C4BC;

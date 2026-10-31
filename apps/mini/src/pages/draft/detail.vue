@@ -4,7 +4,10 @@ import { computed, ref } from 'vue'
 import PaletteLegend from '../../components/PaletteLegend.vue'
 import { draftsApi } from '../../api/http'
 import type { DraftDetail } from '../../api/types'
+import { useCreateStore } from '../../stores/create'
 import { askConfirm, askText, boardLabel, checkedDraftTitle, showError, showTip, timeAgo } from '../../utils/ui'
+
+const create = useCreateStore()
 
 const draft = ref<DraftDetail | null>(null)
 const crafting = ref(false)
@@ -127,6 +130,16 @@ function exportImage() {
   showTip('长按图片可保存')
 }
 
+function again() {
+  if (!draft.value?.source_key) {
+    showTip('这张稿没有原图，请重新选图')
+    uni.switchTab({ url: '/pages/create/index' })
+    return
+  }
+  create.reuseDraft(draft.value)
+  uni.navigateTo({ url: '/pages/create/params' })
+}
+
 function nextBead() {
   if (!ordered.value.length) return
   if (step.value >= ordered.value.length - 1) {
@@ -150,12 +163,19 @@ function nextBead() {
       </view>
       <text class="fav" @click="toggleFav">{{ draft.favorited ? '♥' : '♡' }}</text>
     </view>
+    <view v-if="draft.pipeline_tags?.length" class="tags">
+      <text v-for="tag in draft.pipeline_tags" :key="tag" class="tag">{{ tag }}</text>
+    </view>
     <view class="stats">
       <view class="stat"><text class="n">{{ draft.board_size }}×{{ draft.board_size }}</text><text>底板</text></view>
       <view class="stat"><text class="n">{{ draft.color_count }}</text><text>色数</text></view>
       <view class="stat"><text class="n">{{ draft.peg_count }}</text><text>钉位</text></view>
     </view>
 
+    <view v-if="draft.pipeline_lines?.length" class="block">
+      <text class="h">出稿管线</text>
+      <text v-for="line in draft.pipeline_lines" :key="line" class="p">· {{ line }}</text>
+    </view>
     <view class="block">
       <text class="h">用豆清单</text>
       <PaletteLegend :items="draft.palette" />
@@ -175,6 +195,7 @@ function nextBead() {
       <text class="next" @click="nextBead">下一种</text>
     </view>
 
+    <view v-if="owned && draft.source_key" class="again" @click="again">再次出稿</view>
     <view class="actions">
       <view class="btn ghost" @click="exportImage">导出</view>
       <view class="btn soft" @click="publish">{{ draft.work_id ? '看作品' : '发布' }}</view>
@@ -193,7 +214,18 @@ function nextBead() {
 .rename { display: inline-block; margin-top: 8rpx; color: $brand-dark; font-size: 24rpx; font-weight: 650; }
 .sub { display: block; margin-top: 6rpx; color: $ink-3; font-size: 24rpx; }
 .fav { font-size: 40rpx; color: $brand; padding: 8rpx; }
+.tags { display: flex; flex-wrap: wrap; gap: 10rpx; margin-top: 16rpx; }
+.tag { background: $brand-lighter; color: $brand-dark; border-radius: 999rpx; padding: 6rpx 16rpx; font-size: 22rpx; }
 .stats { display: flex; background: $card; border-radius: 24rpx; border: 1rpx solid $line; margin-top: 20rpx; }
+.again {
+  margin-top: 24rpx;
+  text-align: center;
+  background: $brand;
+  color: #fff;
+  border-radius: 999rpx;
+  padding: 24rpx;
+  font-weight: 700;
+}
 .stat { flex: 1; text-align: center; padding: 22rpx 0; color: $ink-3; font-size: 22rpx; }
 .n { display: block; color: $ink; font-size: 32rpx; font-weight: 800; }
 .block { margin-top: 24rpx; background: $card; border-radius: 24rpx; border: 1rpx solid $line; padding: 24rpx; }

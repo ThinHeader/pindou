@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 use crate::extract::AuthUser;
-use crate::services::{drafts, plaza};
+use crate::services::{drafts, pipeline, plaza};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +30,14 @@ pub struct GenerateRequest {
     pub color_count: Option<u32>,
     pub palette_pref: Option<String>,
     pub title: Option<String>,
+    /// 默认开启。
+    pub remove_bg: Option<bool>,
+    /// light / standard / strong，默认 standard。
+    pub cartoon_strength: Option<String>,
+    /// person / pet / object，默认 person。
+    pub subject_type: Option<String>,
+    /// generic / mard / perler / shop，默认 generic。
+    pub palette_brand: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,16 +74,16 @@ async fn generate(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(body): Json<GenerateRequest>,
-) -> AppResult<Json<drafts::GenerateOutput>> {
+) -> AppResult<Json<pipeline::JobView>> {
     let (board_size, board_label) = match body.board_size {
         Some(FlexBoard::Num(n)) => (Some(n), None),
         Some(FlexBoard::Label(label)) => (None, Some(label)),
         None => (None, None),
     };
-    let out = drafts::generate(
+    let out = pipeline::enqueue(
         &state,
         auth.user_id,
-        drafts::GenerateInput {
+        pipeline::GenerateInput {
             image_base64: body.image_base64,
             image_ref: body.image_ref,
             board_size,
@@ -83,6 +91,10 @@ async fn generate(
             color_count: body.color_count,
             palette_pref: body.palette_pref,
             title: body.title,
+            remove_bg: body.remove_bg,
+            cartoon_strength: body.cartoon_strength,
+            subject_type: body.subject_type,
+            palette_brand: body.palette_brand,
         },
     )
     .await?;

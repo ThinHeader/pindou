@@ -7,7 +7,7 @@ import type {
   CreditsMutation,
   DraftCard,
   DraftDetail,
-  GenerateResult,
+  JobView,
   LedgerItem,
   LoginResult,
   MeProfile,
@@ -128,7 +128,11 @@ export const draftsApi = {
     color_count?: number
     palette_pref?: string
     title?: string
-  }) => http.post<GenerateResult>('/api/v1/drafts/generate', body),
+    remove_bg?: boolean
+    cartoon_strength?: string
+    subject_type?: string
+    palette_brand?: string
+  }) => http.post<JobView>('/api/v1/drafts/generate', body),
   list: (tab: string, q = '') =>
     http.get<{ items: DraftCard[] }>(
       `/api/v1/drafts?tab=${encodeURIComponent(tab)}&q=${encodeURIComponent(q)}`,
@@ -140,6 +144,11 @@ export const draftsApi = {
   favorite: (id: string) => http.post<{ favorited: boolean }>(`/api/v1/drafts/${id}/favorite`),
   publish: (id: string, body: { title?: string; caption?: string; category?: string }) =>
     http.post<WorkCard>(`/api/v1/drafts/${id}/publish`, body),
+}
+
+export const jobsApi = {
+  get: (id: string) => http.get<JobView>(`/api/v1/jobs/${id}`),
+  cancel: (id: string) => http.post<JobView>(`/api/v1/jobs/${id}/cancel`),
 }
 
 export const plazaApi = {

@@ -121,7 +121,11 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 读取上面的对象。预览图键形如 `previews/<uuid>.png`。
 
-## 出稿
+## 出稿（MVP+）
+
+一次成功出稿只扣 1 积分，包含智能去背、人物动漫化和拼豆量化。失败或取消不扣，也不写退款（因为没有预扣）。
+
+`POST /api/v1/drafts/generate` 校验参数和图片后立刻返回任务，管线在后台跑。小程序轮询 `GET /api/v1/jobs/{id}`。
 
 ### `POST /api/v1/drafts/generate`
 
@@ -132,32 +136,65 @@ Base URL（本地）：`http://127.0.0.1:3000`
   "board_size": 52,
   "color_count": 12,
   "palette_pref": "auto",
-  "title": "可选"
+  "title": "可选",
+  "remove_bg": true,
+  "cartoon_strength": "standard",
+  "subject_type": "person",
+  "palette_brand": "generic"
 }
 ```
 
 - `board_size` 也可以写 `"52x52"` / `"78×78"` / `"104x104"`。只接受 52、78、104。
-- `color_count` 默认 12，范围 4–24，表示色数上限；实际色数可能更少。
+- `color_count` 默认 12，范围 4–24，表示色数上限；稿件上的 `color_count` 是实际色数，可能更少。
 - `palette_pref`：`auto` | `warm` | `macaron` | `contrast`。
+- `remove_bg` 默认 `true`。关掉后跳过去背，卡通直接吃原图。
+- `cartoon_strength`：`light` 轻 / `standard` 标准（默认）/ `strong` 强。
+- `subject_type`：`person` 人像（人体分割）/ `pet` 宠物 / `object` 静物（后两者走通用分割）。默认人像。
+- `palette_brand`：`generic` 通用拼豆 / `mard` / `perler` / `shop` 店内色卡。都是内置 SKU 的子集，不是厂商目录抓取。
 - `image_ref`：`builtin:cat|bear|chick|bunny` 用内置示例图。
-- `title`：可选，1–40 字，首尾空格会去掉。不传或只传空白时：示例图用「小橘猫吐舌 / 黄油小熊 / 柠檬汽水 / 蜜桃兔耳」，其他图用「未命名草稿」。超过 40 字返回 400，且不扣积分。
-- 没图：400「请先选择图片」。坏图：400「无法解析图片，请上传 JPG 或 PNG」。过大：400「图片过大…」。
-- 先量化再扣分。图片失败不扣积分。余额不足 402。标题不合法发生在扣分之前。
+- `title`：可选，1–40 字，首尾空格会去掉。不传或只传空白时：示例图用「小橘猫吐舌 / 黄油小熊 / 柠檬汽水 / 蜜桃兔耳」，其他图用「未命名草稿」。超过 40 字返回 400，且不建任务、不扣积分。
+- 没图：400「请先选择图片」。坏图：400「无法解析图片，请上传 JPG 或 PNG」。过大：400「图片过大…」。余额不足 402。这些都发生在扣分之前。
+- 没配阿里云密钥时 `provider` 为 `mock`：本地抠出透明 PNG、做色阶卡通，再用最近邻得到真实色号稿。
+- `PIPELINE_PROVIDER=aliyun` 但密钥为空：400，不建任务。
 
-成功：
+立刻返回的任务（此时通常还没扣分）：
 
 ```json
 {
   "job_id": "uuid",
-  "draft_id": "uuid",
-  "status": "ready",
-  "balance": 2,
-  "message": "色号稿已生成（52×52，实际 9 色）",
-  "draft": { "id": "...", "palette": [], "preview_url": "...", "peg_count": 2704 }
+  "status": "matting",
+  "progress": 36,
+  "message": "智能去背中",
+  "provider": "mock",
+  "charged": false,
+  "stages": [
+    { "id": "upload", "label": "上传原图", "state": "done", "detail": "原图已就绪" },
+    { "id": "matting", "label": "智能去背", "state": "active", "detail": "开发模拟去背中" },
+    { "id": "cartoon", "label": "人物动漫化", "state": "pending", "detail": "人物动漫化" },
+    { "id": "pixel", "label": "拼豆量化", "state": "pending", "detail": "自研像素 / 色板映射" }
+  ]
 }
 ```
 
-算法：缩放到珠板尺寸后，映射到内置拼豆色板（含设计稿色号 A1 / B3 / C2 / D1 / K9 等），再把超出色数上限的小色块并进最近色。预览是一颗颗珠子的 PNG。
+`stages[].state`：`done` | `active` | `pending` | `fail` | `skipped`（去背关闭）。
+
+### `GET /api/v1/jobs/{id}`
+
+只能看自己的任务。别人的任务 404。
+
+`status`：`matting` | `cartoon` | `pixel` | `done` | `failed` | `cancelled`（提交后也可能短暂停在 `upload` / `queued`）。
+
+完成后 `charged` 为 true，`balance` 是扣分后的余额，`draft` 是稿件详情。`original_url` / `matted_url` / `cartoon_url` / `preview_url` 指向对象存储里的中间图和珠图。去背关闭时 `matted_url` 为 null。
+
+失败时 HTTP 仍是 200，`status` 为 `failed`，`error` 说明原因，并写明本次未扣积分。`failed_stage` 会反映在对应步骤的 `state: "fail"` 上。
+
+### `POST /api/v1/jobs/{id}/cancel`
+
+进行中的任务改为 `cancelled`，文案「已取消，未扣积分」。已经 `done` 的任务保持完成态，不会把积分退回去。
+
+珠图算法：把卡通图（或未去背时的原图）最近邻缩放到珠板网格，映射到内置拼豆色板（含 A1 / B3 / C2 / D1 / K9 等），再把超出色数上限的小色块并进最近色。不用扩散模型产生官方珠图。预览是一颗颗珠子的 PNG。
+
+稿件详情额外字段：`pipeline`（`mvp_plus`；旧的官方模板是 `pixel`）、`provider`（`mock` | `aliyun` | `local`）、`remove_bg`、`cartoon_strength`、`subject_type`、`palette_brand`、`pipeline_tags`、`pipeline_lines`、`original_url`、`matted_url`、`cartoon_url`、`source_key`。列表卡片带 `pipeline_tags`，官方模板为空数组。
 
 ## 稿件库
 
