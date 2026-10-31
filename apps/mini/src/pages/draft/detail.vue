@@ -4,7 +4,7 @@ import { computed, ref } from 'vue'
 import PaletteLegend from '../../components/PaletteLegend.vue'
 import { draftsApi } from '../../api/http'
 import type { DraftDetail } from '../../api/types'
-import { boardLabel, showError, showTip, timeAgo } from '../../utils/ui'
+import { askConfirm, askText, boardLabel, checkedDraftTitle, showError, showTip, timeAgo } from '../../utils/ui'
 
 const draft = ref<DraftDetail | null>(null)
 const crafting = ref(false)
@@ -15,6 +15,7 @@ const ordered = computed(() => {
   return list.sort((a, b) => b.count - a.count)
 })
 const current = computed(() => ordered.value[step.value])
+const owned = computed(() => draft.value?.badge === '我的')
 
 onLoad(async (query) => {
   if (!query?.id) return
@@ -36,7 +37,43 @@ async function toggleFav() {
   }
 }
 
-function publish() {
+async function rename() {
+  if (!draft.value || !owned.value) return
+  const current = draft.value.title === '未命名草稿' ? '' : draft.value.title
+  const typed = await askText('修改稿件名称', current, '例如：窗边的猫')
+  if (typed === null || !draft.value) return
+  const title = checkedDraftTitle(typed)
+  if (!title) return
+  try {
+    draft.value = await draftsApi.rename(draft.value.id, title)
+    showTip('已改名')
+  } catch (e) {
+    showError(e, '改名失败')
+  }
+}
+
+async function remove() {
+  if (!draft.value || !owned.value) return
+  const current = draft.value
+  const content = current.work_id
+    ? `「${current.title}」已发布到广场。删除后，广场上的对应作品也会一起下架，且无法恢复。`
+    : `删除后无法恢复。确定删除「${current.title}」吗？`
+  const ok = await askConfirm('删除稿件', content)
+  if (!ok) return
+  try {
+    const res = await draftsApi.remove(current.id)
+    showTip(res.work_deleted ? '作品也已下架' : '已删除')
+    setTimeout(() => {
+      uni.navigateBack({
+        fail: () => uni.switchTab({ url: '/pages/library/index' }),
+      })
+    }, 400)
+  } catch (e) {
+    showError(e, '删除失败')
+  }
+}
+
+async function publish() {
   if (!draft.value) return
   if (draft.value.is_official) {
     showTip('官方模板不能直接发布')
@@ -46,6 +83,14 @@ function publish() {
     uni.navigateTo({ url: `/pages/work/detail?id=${draft.value.work_id}` })
     return
   }
+  const current = draft.value.title === '未命名草稿' ? '' : draft.value.title
+  const typed = await askText('发布到广场', current, '给作品起个名字')
+  if (typed === null || !draft.value) return
+  if ([...typed].length > 40) {
+    showError({ message: '稿件名称请控制在 40 字以内' })
+    return
+  }
+  const title = typed
   const cats = [
     { id: 'pet', label: '萌宠' },
     { id: 'food', label: '食物' },
@@ -62,8 +107,10 @@ function publish() {
         const work = await draftsApi.publish(draft.value.id, {
           category,
           caption: '从稿件库发布',
+          title: title || undefined,
         })
         draft.value.work_id = work.id
+        if (title) draft.value.title = work.title
         showTip('已发布到广场')
         uni.navigateTo({ url: `/pages/work/detail?id=${work.id}` })
       } catch (e) {
@@ -98,6 +145,7 @@ function nextBead() {
     <view class="title-row">
       <view>
         <text class="title">{{ draft.title }}</text>
+        <text v-if="owned" class="rename" @click="rename">改名</text>
         <text class="sub">{{ timeAgo(draft.created_at) }} · {{ draft.author_nickname }} · {{ draft.work_id ? '已发布' : '未发布到广场' }}</text>
       </view>
       <text class="fav" @click="toggleFav">{{ draft.favorited ? '♥' : '♡' }}</text>
@@ -132,6 +180,7 @@ function nextBead() {
       <view class="btn soft" @click="publish">{{ draft.work_id ? '看作品' : '发布' }}</view>
       <view class="btn primary" @click="crafting = true">开拼</view>
     </view>
+    <text v-if="owned" class="danger" @click="remove">删除稿件</text>
   </view>
   <view v-else class="page"><view class="empty">加载稿件…</view></view>
 </template>
@@ -141,6 +190,7 @@ function nextBead() {
 .hero { width: 100%; height: 640rpx; background: $brand-lighter; border-radius: 28rpx; }
 .title-row { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 20rpx; }
 .title { display: block; font-size: 40rpx; font-weight: 800; }
+.rename { display: inline-block; margin-top: 8rpx; color: $brand-dark; font-size: 24rpx; font-weight: 650; }
 .sub { display: block; margin-top: 6rpx; color: $ink-3; font-size: 24rpx; }
 .fav { font-size: 40rpx; color: $brand; padding: 8rpx; }
 .stats { display: flex; background: $card; border-radius: 24rpx; border: 1rpx solid $line; margin-top: 20rpx; }
@@ -161,4 +211,5 @@ function nextBead() {
 .ghost { background: $card; border: 1rpx solid $line; }
 .soft { background: $brand-soft; color: $brand-dark; }
 .primary { flex: 1.2; background: $brand; color: #fff; }
+.danger { display: block; text-align: center; margin-top: 28rpx; color: $ink-3; font-size: 24rpx; }
 </style>

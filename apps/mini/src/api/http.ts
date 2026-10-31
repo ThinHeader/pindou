@@ -30,7 +30,7 @@ function authHeader(): Record<string, string> {
   }
 }
 
-type Method = 'GET' | 'POST' | 'PUT'
+type Method = 'GET' | 'POST' | 'PUT' | 'DELETE'
 
 function request<T>(path: string, method: Method = 'GET', data?: object): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -67,6 +67,7 @@ export const http = {
   get: <T>(path: string) => request<T>(path, 'GET'),
   post: <T>(path: string, data?: object) => request<T>(path, 'POST', data),
   put: <T>(path: string, data?: object) => request<T>(path, 'PUT', data),
+  del: <T>(path: string) => request<T>(path, 'DELETE'),
 }
 
 export function uploadImage(filePath: string): Promise<StoredObject> {
@@ -133,6 +134,9 @@ export const draftsApi = {
       `/api/v1/drafts?tab=${encodeURIComponent(tab)}&q=${encodeURIComponent(q)}`,
     ),
   detail: (id: string) => http.get<DraftDetail>(`/api/v1/drafts/${id}`),
+  rename: (id: string, title: string) => http.put<DraftDetail>(`/api/v1/drafts/${id}`, { title }),
+  remove: (id: string) =>
+    http.del<{ deleted: boolean; work_deleted: boolean }>(`/api/v1/drafts/${id}`),
   favorite: (id: string) => http.post<{ favorited: boolean }>(`/api/v1/drafts/${id}/favorite`),
   publish: (id: string, body: { title?: string; caption?: string; category?: string }) =>
     http.post<WorkCard>(`/api/v1/drafts/${id}/publish`, body),

@@ -381,3 +381,301 @@ async fn mvp_auth_credits_generate_plaza() {
         .unwrap_or("")
         .contains("积分不足"));
 }
+
+#[tokio::test]
+async fn draft_title_rename_and_delete() {
+    let app = app().await;
+    let code = format!("mock:title-{}", Uuid::new_v4());
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    let token = login["token"].as_str().unwrap();
+
+    let (status, claimed) = call(
+        &app,
+        "POST",
+        "/api/v1/credits/daily-claim",
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    assert_eq!(claimed["balance"], 3);
+
+    let long = "豆".repeat(41);
+    let (status, too_long) = call(
+        &app,
+        "POST",
+        "/api/v1/drafts/generate",
+        Some(token),
+        Some(json!({
+            "image_base64": png_base64(),
+            "board_size": 52,
+            "color_count": 4,
+            "title": long
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{too_long}");
+    assert!(too_long["message"].as_str().unwrap_or("").contains("40"));
+    let (status, balance) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "{balance}");
+    assert_eq!(balance["balance"], 3, "非法标题不应扣分");
+
+    let (status, unnamed) = call(
+        &app,
+        "POST",
+        "/api/v1/drafts/generate",
+        Some(token),
+        Some(json!({
+            "image_base64": png_base64(),
+            "board_size": 52,
+            "color_count": 4,
+            "title": "   "
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{unnamed}");
+    assert_eq!(unnamed["draft"]["title"], "未命名草稿");
+    assert_eq!(unnamed["balance"], 2);
+    let draft_id = unnamed["draft"]["id"].as_str().unwrap();
+
+    let (status, renamed) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        Some(json!({ "title": "  窗边的猫  " })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["title"], "窗边的猫");
+
+    let (status, blank) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        Some(json!({ "title": "  " })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{blank}");
+    assert!(blank["message"].as_str().unwrap_or("").contains("请填写"));
+
+    let (status, still) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{still}");
+    assert_eq!(still["title"], "窗边的猫");
+
+    let other_code = format!("mock:other-{}", Uuid::new_v4());
+    let (status, other_login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": other_code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{other_login}");
+    let other = other_login["token"].as_str().unwrap();
+    let (status, forbidden) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(other),
+        Some(json!({ "title": "别人的稿" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{forbidden}");
+    let (status, forbidden_del) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(other),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{forbidden_del}");
+
+    let (status, missing) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/drafts/{}", Uuid::new_v4()),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+
+    let (status, official) = call(
+        &app,
+        "GET",
+        "/api/v1/drafts?tab=official",
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{official}");
+    let official_id = official["items"][0]["id"].as_str().unwrap();
+    let (status, official_del) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/drafts/{official_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{official_del}");
+
+    let (status, work) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/drafts/{draft_id}/publish"),
+        Some(token),
+        Some(json!({ "title": "广场窗边猫", "category": "pet", "caption": "命名发布" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{work}");
+    assert_eq!(work["title"], "广场窗边猫");
+    let work_id = work["id"].as_str().unwrap();
+
+    let (status, again) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/drafts/{draft_id}/publish"),
+        Some(token),
+        Some(json!({ "title": "改不了", "category": "pet" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["id"], work_id);
+    assert_eq!(again["title"], "广场窗边猫");
+
+    let (status, named_draft) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{named_draft}");
+    assert_eq!(named_draft["title"], "广场窗边猫");
+    assert_eq!(named_draft["work_id"], work_id);
+
+    let (status, removed) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["deleted"], true);
+    assert_eq!(removed["work_deleted"], true);
+    let (status, gone_draft) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{gone_draft}");
+    let (status, gone_work) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/plaza/works/{work_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{gone_work}");
+
+    let (status, second) = call(
+        &app,
+        "POST",
+        "/api/v1/drafts/generate",
+        Some(token),
+        Some(json!({
+            "image_base64": png_base64(),
+            "board_size": 52,
+            "color_count": 4,
+            "title": "  第二张  "
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["draft"]["title"], "第二张");
+    assert_eq!(second["balance"], 1);
+    let second_id = second["draft"]["id"].as_str().unwrap();
+
+    let (status, published) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/drafts/{second_id}/publish"),
+        Some(token),
+        Some(json!({ "category": "simple" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{published}");
+    assert_eq!(published["title"], "第二张");
+    let second_work = published["id"].as_str().unwrap().to_string();
+
+    let (status, dropped) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/drafts/{second_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dropped}");
+    assert_eq!(dropped["work_deleted"], true);
+    let (status, gone_second) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/plaza/works/{second_work}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{gone_second}");
+
+    let (status, builtin) = call(
+        &app,
+        "POST",
+        "/api/v1/drafts/generate",
+        Some(token),
+        Some(json!({ "image_ref": "builtin:cat", "board_size": 52, "color_count": 6 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{builtin}");
+    assert_eq!(builtin["draft"]["title"], "小橘猫吐舌");
+    assert_eq!(builtin["balance"], 0);
+    let builtin_id = builtin["draft"]["id"].as_str().unwrap();
+    let (status, only_draft) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/drafts/{builtin_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{only_draft}");
+    assert_eq!(only_draft["deleted"], true);
+    assert_eq!(only_draft["work_deleted"], false);
+}
