@@ -113,18 +113,10 @@ function openWork(id: string) {
   border: 1rpx solid $line;
 }
 .chip.on { background: $brand-soft; color: $brand-dark; border-color: transparent; font-weight: 700; }
-.grid {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  justify-content: space-between;
-}
+.grid { @include feed-grid; }
 .card {
-  flex: 0 0 340rpx;
-  width: 340rpx;
-  max-width: 340rpx;
-  margin-bottom: 16rpx;
-  box-sizing: border-box;
+  @include feed-cell;
+  overflow: hidden;
 }
 .cover { width: 100%; height: 300rpx; background: $brand-lighter; display: block; }
 .meta { padding: 12rpx 16rpx 18rpx; }

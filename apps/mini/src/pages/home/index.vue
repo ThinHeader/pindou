@@ -172,18 +172,9 @@ function stockSoon() {
   font-size: 24rpx;
   font-weight: 700;
 }
-.grid {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  justify-content: space-between;
-}
+.grid { @include feed-grid; }
 .rec {
-  flex: 0 0 340rpx;
-  width: 340rpx;
-  max-width: 340rpx;
-  margin-bottom: 16rpx;
-  box-sizing: border-box;
+  @include feed-cell;
   background: $card;
   border-radius: 24rpx;
   border: 1rpx solid $line;
