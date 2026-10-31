@@ -84,7 +84,7 @@ function buy(pack: CreditPack) {
     <view class="rules">
       <text class="h">积分怎么用</text>
       <text>· 每日登录送 {{ credits.dailyGrant }} 积分（每天一次）</text>
-      <text>· 每次成功出稿消耗 {{ credits.generateCost }} 积分</text>
+      <text>· 每次成功出稿消耗 {{ credits.generateCost }} 积分（含去背+卡通+拼豆），失败不扣</text>
       <text>· 不足时可看广告 +{{ credits.adReward }}，或充值购买</text>
     </view>
 

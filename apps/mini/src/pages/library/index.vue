@@ -118,6 +118,7 @@ async function removeItem(item: DraftCard) {
             <text v-if="item.badge === '我的'" class="manage" @click.stop="manage(item)">管理</text>
           </view>
           <text class="tags">{{ boardLabel(item.board_size, item.color_count) }} · {{ item.badge }}</text>
+          <text v-if="item.pipeline_tags?.length" class="pipe">{{ item.pipeline_tags.slice(0, 3).join(' · ') }}</text>
         </view>
       </view>
     </view>
@@ -151,4 +152,5 @@ async function removeItem(item: DraftCard) {
 .name { flex: 1; min-width: 0; font-weight: 700; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .manage { flex-shrink: 0; color: $brand-dark; font-size: 22rpx; font-weight: 650; }
 .tags { display: block; margin-top: 6rpx; color: $ink-3; font-size: 22rpx; }
+.pipe { display: block; margin-top: 6rpx; color: $brand-dark; font-size: 20rpx; }
 </style>

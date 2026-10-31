@@ -101,7 +101,7 @@ function rename() {
       <view>
         <text class="label">当前积分</text>
         <text class="num">{{ credits.balance }}</text>
-        <text class="rule">日送 {{ credits.dailyGrant }} · 出稿 −{{ credits.generateCost }}/次</text>
+        <text class="rule">日送 {{ credits.dailyGrant }} · 出稿 −{{ credits.generateCost }}/次 · 失败不扣</text>
       </view>
       <view class="side">
         <text class="state">{{ credits.dailyClaimed ? '今日已领' : '今日未领' }}</text>

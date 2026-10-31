@@ -79,6 +79,7 @@ export interface DraftCard {
   badge: string
   author_nickname: string
   created_at: string
+  pipeline_tags?: string[]
 }
 
 export interface DraftDetail extends DraftCard {
@@ -87,15 +88,50 @@ export interface DraftDetail extends DraftCard {
   palette_pref: string
   work_id: string | null
   hint: string
+  pipeline?: string
+  provider?: string
+  remove_bg?: boolean
+  cartoon_strength?: string
+  subject_type?: string
+  palette_brand?: string
+  pipeline_lines?: string[]
+  original_url?: string | null
+  matted_url?: string | null
+  cartoon_url?: string | null
+  source_url?: string | null
+  source_key?: string | null
 }
 
-export interface GenerateResult {
+export interface JobStage {
+  id: string
+  label: string
+  state: 'done' | 'active' | 'pending' | 'fail' | 'skipped' | string
+  detail: string
+}
+
+export interface JobView {
   job_id: string
-  draft_id: string
   status: string
-  balance: number
+  progress: number
   message: string
-  draft: DraftDetail
+  stages: JobStage[]
+  provider: string
+  remove_bg: boolean
+  cartoon_strength: string
+  subject_type: string
+  palette_brand: string
+  palette_pref: string
+  board_size: number
+  color_count: number
+  original_url?: string | null
+  matted_url?: string | null
+  cartoon_url?: string | null
+  preview_url?: string | null
+  draft_id?: string | null
+  draft?: DraftDetail | null
+  balance?: number | null
+  error?: string | null
+  charged: boolean
 }
 
 export interface Author {

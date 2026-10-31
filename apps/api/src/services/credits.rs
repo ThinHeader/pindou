@@ -9,6 +9,8 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 pub const DAILY_GRANT: i32 = 3;
+/// 一次成功的 MVP+ 出稿（去背 + 卡通 + 拼豆量化）只扣这一笔。
+/// 失败或取消不会走到扣减，因此也不另做退款。
 pub const GENERATE_COST: i32 = 1;
 pub const AD_REWARD: i32 = 1;
 

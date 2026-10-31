@@ -16,7 +16,7 @@
     {
       "path": "pages/create/index",
       "style": {
-        "navigationBarTitleText": "出稿"
+        "navigationBarTitleText": "开始出稿"
       }
     },
     {
@@ -38,9 +38,15 @@
       }
     },
     {
+      "path": "pages/create/generating",
+      "style": {
+        "navigationBarTitleText": "正在出稿"
+      }
+    },
+    {
       "path": "pages/create/preview",
       "style": {
-        "navigationBarTitleText": "生成预览"
+        "navigationBarTitleText": "出稿预览"
       }
     },
     {

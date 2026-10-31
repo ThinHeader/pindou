@@ -22,7 +22,7 @@ docs/api.md                 # 接口说明
 | 动作 | 积分 |
 |------|------|
 | 每日领取 | +3（东八区每天一次，PostgreSQL `daily_claims` 幂等） |
-| 成功出稿 | −1（图片失败不扣） |
+| 成功出稿 | −1（整条 MVP+：去背 + 卡通 + 拼豆，只扣一次；失败或取消不扣，也不退款） |
 | 激励广告 | +1 |
 | 充值 | 10 / ¥6，35 / ¥18，60 / ¥30（示意下单 + mock 回调） |
 
@@ -61,6 +61,28 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/wx-login \
 
 微信真登录：在 `.env` 填 `WX_APPID` 和 `WX_SECRET`。留空则走开发态，同一 `code` 对应同一用户，不会请求微信。
 
+MVP+ 出稿默认「智能去背 → 人物动漫化 → 自研最近邻拼豆」。阿里云密钥见下方。没配密钥时走开发模拟，仍然会产出透明底、卡通中间图和真实色号稿，方便本地和 CI。
+
+## 阿里云视觉（可选）
+
+在 `apps/api/.env`：
+
+| 变量 | 作用 |
+|------|------|
+| `ALIYUN_ACCESS_KEY_ID` | 访问密钥 ID。留空则不请求阿里云 |
+| `ALIYUN_ACCESS_KEY_SECRET` | 访问密钥 Secret。不要提交到仓库 |
+| `ALIYUN_REGION` | 默认 `cn-shanghai` |
+| `PIPELINE_PROVIDER` | `auto`（有密钥用阿里云，否则模拟）/ `mock` / `aliyun` |
+| `ALIYUN_IMAGESEG_ENDPOINT` | 可选，分割 API 主机名 |
+| `ALIYUN_IMAGEENHAN_ENDPOINT` | 可选，动漫化 API 主机名 |
+| `PUBLIC_BASE_URL` | 原图和抠图的公网地址。阿里云要能下载这个 URL |
+
+人像走图像分割 `SegmentBody`，宠物和静物走 `SegmentCommonImage`。卡通走图像生产 `GenerateHumanAnimeStyle`（轻 = handdrawn，标准 = anime，强 = 3d）。珠图不用扩散模型，是最近邻缩到 52/78/104 再映射内置 SKU 色板。
+
+`PIPELINE_PROVIDER=aliyun` 但没配密钥时，出稿接口直接返回 400，不会扣积分。
+
+积分：整次成功才扣 1 分，写在落稿的同一个事务里。中间任何一步失败或用户取消，都不扣，因此也没有退款流水。
+
 ## 3. 测试
 
 Postgres 要先起来（和 `cargo run` 同一套 `DATABASE_URL`）。
@@ -70,7 +92,7 @@ cd apps/api
 cargo test
 ```
 
-覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、色号稿落库与命名、改名删除、广场点赞评论、示意充值回调、余额不足 402。
+覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、MVP+ 模拟管线（去背 / 卡通 / 最近邻色号，成功才扣 1 分）、改名删除、广场点赞评论、示意充值回调、余额不足 402。集成测试强制 `PIPELINE_PROVIDER=mock`。
 
 ## 4. 小程序
 
@@ -88,7 +110,7 @@ npm install            # .npmrc 已打开 legacy-peer-deps，对齐 uni-app 与 
 2. 模拟器可访问 `127.0.0.1`。真机改成电脑局域网 IP，并在开发者工具关闭「校验合法域名」（`manifest.json` 里 `urlCheck` 已是 false）。
 3. 开发态不要设 `VITE_WX_LOGIN`。登录页「微信一键登录」会使用本机保存的稳定 mock code。后端配好 AppId/Secret 后，再把 `VITE_WX_LOGIN=1`，才会把 `uni.login` 的 code 交给 code2session。
 
-建议走一遍：登录 → 领取今日 +3 → 出稿（拍照 / 相册 / 示例图）→ 选 52·78·104 和色数 → 预览色号 → 稿件库 → 发布到广场 → 点赞评论。积分为 0 时会弹出「看广告 / 去充值」。
+建议走一遍：登录 → 领取今日 +3 → 出稿（拍照 / 相册 / 示例图）→ 选珠板、色数、去背和卡通强度 → 生成页看上传 / 去背 / 卡通 / 拼豆 → 预览里对比原图、卡通中间态和拼豆结果 → 稿件库看到管线标签 → 发布到广场 → 点赞评论。积分为 0 时会弹出「看广告 / 去充值」。没配阿里云时，生成页的去背说明是「开发模拟」。
 
 ## 5. 对象存储
 

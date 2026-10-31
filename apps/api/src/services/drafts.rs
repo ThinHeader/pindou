@@ -3,14 +3,13 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
-use crate::services::credits::{self, GENERATE_COST};
-use crate::services::pixel::{self, Pref};
+use crate::services::pixel;
 use crate::services::storage::{decode_image_base64, normalize_object_key};
+use crate::services::vision;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -35,6 +34,7 @@ pub struct DraftCard {
     pub badge: String,
     pub author_nickname: String,
     pub created_at: DateTime<Utc>,
+    pub pipeline_tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +56,19 @@ pub struct DraftDetail {
     pub work_id: Option<Uuid>,
     pub hint: String,
     pub created_at: DateTime<Utc>,
+    pub pipeline: String,
+    pub provider: String,
+    pub remove_bg: bool,
+    pub cartoon_strength: String,
+    pub subject_type: String,
+    pub palette_brand: String,
+    pub pipeline_tags: Vec<String>,
+    pub pipeline_lines: Vec<String>,
+    pub original_url: Option<String>,
+    pub matted_url: Option<String>,
+    pub cartoon_url: Option<String>,
+    pub source_url: Option<String>,
+    pub source_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,134 +76,6 @@ pub struct DeleteOutput {
     pub deleted: bool,
     /// 这张稿已经发布时，广场作品会一起删除。
     pub work_deleted: bool,
-}
-
-#[derive(Debug)]
-pub struct GenerateInput {
-    pub image_base64: Option<String>,
-    pub image_ref: Option<String>,
-    pub board_size: Option<u32>,
-    pub board_label: Option<String>,
-    pub color_count: Option<u32>,
-    pub palette_pref: Option<String>,
-    pub title: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GenerateOutput {
-    pub job_id: Uuid,
-    pub draft_id: Uuid,
-    pub status: String,
-    pub balance: i32,
-    pub message: String,
-    pub draft: DraftDetail,
-}
-
-pub async fn generate(
-    state: &AppState,
-    user_id: Uuid,
-    input: GenerateInput,
-) -> AppResult<GenerateOutput> {
-    let board = pixel::parse_board(input.board_size, input.board_label.as_deref())?;
-    let color_cap = pixel::parse_color_count(input.color_count)?;
-    let pref = match input.palette_pref.as_deref().unwrap_or("auto") {
-        raw => Pref::parse(raw).ok_or_else(|| AppError::BadRequest("色系偏好无效".into()))?,
-    };
-    // 标题不合法时直接拒绝，避免先算图再失败。空标题走默认名，不在这里报错。
-    let title = pick_title(input.title.as_deref(), input.image_ref.as_deref())?;
-
-    // 先看余额，图片失败时不会扣分；真正扣减仍在事务里再查一次。
-    let snapshot = credits::view(state, user_id).await?;
-    if snapshot.balance < GENERATE_COST {
-        return Err(AppError::InsufficientCredits(format!(
-            "积分不足：需要 {GENERATE_COST}，当前 {}",
-            snapshot.balance
-        )));
-    }
-
-    let bytes = load_image_bytes(
-        state,
-        input.image_base64.as_deref(),
-        input.image_ref.as_deref(),
-    )
-    .await?;
-    let pattern = pixel::pixelate(&bytes, board, color_cap, pref)?;
-    let preview = pixel::render_preview_png(&pattern)?;
-    let draft_id = Uuid::new_v4();
-    let preview_key = format!("previews/{draft_id}.png");
-    state
-        .storage
-        .put_object(&preview_key, &preview, "image/png")
-        .await?;
-
-    let source_key = source_key_from_ref(input.image_ref.as_deref(), &state.config.public_base_url);
-    let palette_json = palette_value(&pattern);
-    let actual_colors = pattern.palette.len() as i32;
-    let peg = (board * board) as i32;
-
-    let inserted = async {
-        let mut tx = state.db.begin().await?;
-        let balance = credits::lock_balance(&mut tx, user_id).await?;
-        if balance < GENERATE_COST {
-            return Err(AppError::InsufficientCredits(format!(
-                "积分不足：需要 {GENERATE_COST}，当前 {balance}"
-            )));
-        }
-        sqlx::query(
-            r#"
-            INSERT INTO drafts (
-                id, user_id, title, board_size, color_count, peg_count,
-                palette, cells, preview_key, source_key, palette_pref,
-                is_template, is_official
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,FALSE,FALSE)
-            "#,
-        )
-        .bind(draft_id)
-        .bind(user_id)
-        .bind(&title)
-        .bind(board as i32)
-        .bind(actual_colors)
-        .bind(peg)
-        .bind(&palette_json)
-        .bind(&pattern.cells)
-        .bind(&preview_key)
-        .bind(&source_key)
-        .bind(pref.as_str())
-        .execute(&mut *tx)
-        .await?;
-
-        let balance = credits::apply_delta_tx(
-            &mut tx,
-            user_id,
-            -GENERATE_COST,
-            "generate",
-            Some(&draft_id.to_string()),
-        )
-        .await?;
-        tx.commit().await?;
-        Ok::<i32, AppError>(balance)
-    }
-    .await;
-
-    let balance = match inserted {
-        Ok(b) => b,
-        Err(err) => {
-            let _ = state.storage.delete_object(&preview_key).await;
-            return Err(err);
-        }
-    };
-
-    let draft = get_detail(state, user_id, draft_id).await?;
-    let message = format!("色号稿已生成（{board}×{board}，实际 {actual_colors} 色）");
-    Ok(GenerateOutput {
-        job_id: draft_id,
-        draft_id,
-        status: "ready".into(),
-        balance,
-        message,
-        draft,
-    })
 }
 
 pub async fn list(
@@ -205,6 +90,7 @@ pub async fn list(
         r#"
         SELECT d.id, d.user_id, d.title, d.board_size, d.color_count, d.peg_count,
                d.preview_key, d.is_template, d.is_official, d.created_at,
+               d.pipeline, d.remove_bg, d.cartoon_strength, d.subject_type,
                u.nickname AS author_nickname,
                EXISTS(
                  SELECT 1 FROM draft_favorites f
@@ -245,6 +131,8 @@ pub async fn get_detail(state: &AppState, user_id: Uuid, draft_id: Uuid) -> AppR
         SELECT d.id, d.user_id, d.title, d.board_size, d.color_count, d.peg_count,
                d.palette, d.cells, d.preview_key, d.palette_pref,
                d.is_template, d.is_official, d.created_at,
+               d.pipeline, d.provider, d.remove_bg, d.cartoon_strength, d.subject_type,
+               d.palette_brand, d.matted_key, d.cartoon_key, d.source_key,
                u.nickname AS author_nickname,
                EXISTS(
                  SELECT 1 FROM draft_favorites f
@@ -362,6 +250,17 @@ pub async fn delete_owned(
     }
     tx.commit().await?;
     let _ = state.storage.delete_object(&row.preview_key).await;
+    if let Some(key) = row.matted_key.as_deref() {
+        let _ = state.storage.delete_object(key).await;
+    }
+    if let Some(key) = row.cartoon_key.as_deref() {
+        let _ = state.storage.delete_object(key).await;
+    }
+    if let Some(key) = row.source_key.as_deref() {
+        if key.starts_with("pipeline/") {
+            let _ = state.storage.delete_object(key).await;
+        }
+    }
     Ok(DeleteOutput {
         deleted: true,
         work_deleted: works.rows_affected() > 0,
@@ -376,7 +275,7 @@ async fn gate_owner(
 ) -> AppResult<DraftGateRow> {
     let row = sqlx::query_as::<_, DraftGateRow>(
         r#"
-        SELECT user_id, is_official, is_template, preview_key
+        SELECT user_id, is_official, is_template, preview_key, matted_key, cartoon_key, source_key
         FROM drafts WHERE id = $1
         "#,
     )
@@ -394,7 +293,7 @@ async fn gate_owner(
     Ok(row)
 }
 
-async fn load_image_bytes(
+pub(crate) async fn load_image_bytes(
     state: &AppState,
     b64: Option<&str>,
     refer: Option<&str>,
@@ -423,7 +322,7 @@ async fn load_image_bytes(
     Err(AppError::BadRequest("请先选择图片".into()))
 }
 
-fn source_key_from_ref(refer: Option<&str>, public_base: &str) -> Option<String> {
+pub(crate) fn source_key_from_ref(refer: Option<&str>, public_base: &str) -> Option<String> {
     let refer = refer.map(str::trim).filter(|s| !s.is_empty())?;
     if refer.starts_with("builtin:") {
         return None;
@@ -436,7 +335,7 @@ fn source_key_from_ref(refer: Option<&str>, public_base: &str) -> Option<String>
     }
 }
 
-fn pick_title(explicit: Option<&str>, refer: Option<&str>) -> AppResult<String> {
+pub(crate) fn pick_title(explicit: Option<&str>, refer: Option<&str>) -> AppResult<String> {
     if let Some(title) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         return normalize_title(title);
     }
@@ -472,19 +371,6 @@ fn like_pattern(q: &str) -> String {
     } else {
         format!("%{cleaned}%")
     }
-}
-
-fn palette_value(pattern: &pixel::Pattern) -> serde_json::Value {
-    json!(pattern
-        .palette
-        .iter()
-        .map(|s| json!({
-            "code": s.code,
-            "name": s.name,
-            "hex": s.hex,
-            "count": s.count,
-        }))
-        .collect::<Vec<_>>())
 }
 
 fn palette_from_json(value: &serde_json::Value) -> Vec<PaletteDto> {
@@ -537,6 +423,12 @@ fn card_from_row(state: &AppState, viewer: Uuid, row: &DraftListRow) -> DraftCar
         ),
         author_nickname: row.author_nickname.clone(),
         created_at: row.created_at,
+        pipeline_tags: vision::pipeline_tags(
+            &row.pipeline,
+            row.remove_bg,
+            &row.cartoon_strength,
+            &row.subject_type,
+        ),
     }
 }
 
@@ -567,6 +459,43 @@ fn detail_from_row(state: &AppState, viewer: Uuid, row: &DraftDetailRow) -> Draf
         author_nickname: row.author_nickname.clone(),
         work_id: row.work_id,
         created_at: row.created_at,
+        pipeline: row.pipeline.clone(),
+        provider: row.provider.clone(),
+        remove_bg: row.remove_bg,
+        cartoon_strength: row.cartoon_strength.clone(),
+        subject_type: row.subject_type.clone(),
+        palette_brand: row.palette_brand.clone(),
+        pipeline_tags: vision::pipeline_tags(
+            &row.pipeline,
+            row.remove_bg,
+            &row.cartoon_strength,
+            &row.subject_type,
+        ),
+        pipeline_lines: vision::pipeline_lines(
+            &row.pipeline,
+            &row.provider,
+            row.remove_bg,
+            &row.cartoon_strength,
+            &row.palette_pref,
+            &row.palette_brand,
+        ),
+        original_url: row
+            .source_key
+            .as_deref()
+            .map(|key| state.storage.public_url(key)),
+        matted_url: row
+            .matted_key
+            .as_deref()
+            .map(|key| state.storage.public_url(key)),
+        cartoon_url: row
+            .cartoon_key
+            .as_deref()
+            .map(|key| state.storage.public_url(key)),
+        source_url: row
+            .source_key
+            .as_deref()
+            .map(|key| state.storage.public_url(key)),
+        source_key: row.source_key.clone(),
     }
 }
 
@@ -576,6 +505,9 @@ struct DraftGateRow {
     is_official: bool,
     is_template: bool,
     preview_key: String,
+    matted_key: Option<String>,
+    cartoon_key: Option<String>,
+    source_key: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -590,6 +522,10 @@ struct DraftListRow {
     is_template: bool,
     is_official: bool,
     created_at: DateTime<Utc>,
+    pipeline: String,
+    remove_bg: bool,
+    cartoon_strength: String,
+    subject_type: String,
     author_nickname: String,
     favorited: bool,
 }
@@ -609,6 +545,15 @@ struct DraftDetailRow {
     is_template: bool,
     is_official: bool,
     created_at: DateTime<Utc>,
+    pipeline: String,
+    provider: String,
+    remove_bg: bool,
+    cartoon_strength: String,
+    subject_type: String,
+    palette_brand: String,
+    matted_key: Option<String>,
+    cartoon_key: Option<String>,
+    source_key: Option<String>,
     author_nickname: String,
     favorited: bool,
     work_id: Option<Uuid>,

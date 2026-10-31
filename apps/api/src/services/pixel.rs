@@ -18,6 +18,54 @@ pub enum Pref {
     Contrast,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Brand {
+    /// 内置全色板。
+    Generic,
+    /// 常用暖色子集，色号仍是内置 SKU，不是厂商目录抓取。
+    Mard,
+    /// 对比色子集。
+    Perler,
+    /// 设计稿里的店内色卡（A1 / B3 / C2 / D1 / K9 等）。
+    Shop,
+}
+
+impl Brand {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "" | "generic" | "auto" | "通用" | "通用拼豆" => Some(Self::Generic),
+            "mard" | "MARD" => Some(Self::Mard),
+            "perler" | "Perler" => Some(Self::Perler),
+            "shop" | "store" | "店内" | "店内色卡" => Some(Self::Shop),
+            other => match other.to_ascii_lowercase().as_str() {
+                "generic" | "auto" => Some(Self::Generic),
+                "mard" => Some(Self::Mard),
+                "perler" => Some(Self::Perler),
+                "shop" | "store" => Some(Self::Shop),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Mard => "mard",
+            Self::Perler => "perler",
+            Self::Shop => "shop",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Generic => "通用拼豆",
+            Self::Mard => "MARD",
+            Self::Perler => "Perler",
+            Self::Shop => "店内色卡",
+        }
+    }
+}
+
 impl Pref {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim() {
@@ -316,14 +364,7 @@ pub fn parse_color_count(n: Option<u32>) -> Result<u32, PixelError> {
     }
 }
 
-pub fn pixelate(
-    bytes: &[u8],
-    board: u32,
-    color_count: u32,
-    pref: Pref,
-) -> Result<Pattern, PixelError> {
-    check_board(board)?;
-    parse_color_count(Some(color_count))?;
+pub fn validate_image(bytes: &[u8]) -> Result<DynamicImage, PixelError> {
     if bytes.len() > 6 * 1024 * 1024 {
         return Err(PixelError::TooLarge);
     }
@@ -334,14 +375,69 @@ pub fn pixelate(
     if img.width() as u64 * img.height() as u64 > 20_000_000 {
         return Err(PixelError::TooLarge);
     }
+    Ok(img)
+}
+
+/// 种子图和旧路径：三角滤波缩小后再映射色板。
+pub fn pixelate(
+    bytes: &[u8],
+    board: u32,
+    color_count: u32,
+    pref: Pref,
+) -> Result<Pattern, PixelError> {
+    pixelate_inner(bytes, board, color_count, pref, Brand::Generic, false)
+}
+
+/// MVP+ 正式珠图：最近邻缩放到珠板网格，再映射固定 SKU 色板。
+/// 不用扩散模型产网格。透明像素先铺到白底，再进最近邻。
+pub fn pixelate_beads(
+    bytes: &[u8],
+    board: u32,
+    color_count: u32,
+    pref: Pref,
+    brand: Brand,
+) -> Result<Pattern, PixelError> {
+    pixelate_inner(bytes, board, color_count, pref, brand, true)
+}
+
+fn pixelate_inner(
+    bytes: &[u8],
+    board: u32,
+    color_count: u32,
+    pref: Pref,
+    brand: Brand,
+    nearest_resize: bool,
+) -> Result<Pattern, PixelError> {
+    check_board(board)?;
+    parse_color_count(Some(color_count))?;
+    let img = validate_image(bytes)?;
     let flat = flatten_on_white(&img);
-    let small = image::imageops::resize(&flat, board, board, FilterType::Triangle);
+    let small = if nearest_resize {
+        resize_nearest(&flat, board)
+    } else {
+        image::imageops::resize(&flat, board, board, FilterType::Triangle)
+    };
     let mut assign = Vec::with_capacity((board * board) as usize);
     for pixel in small.pixels() {
-        assign.push(nearest([pixel[0], pixel[1], pixel[2]], pref));
+        assign.push(nearest([pixel[0], pixel[1], pixel[2]], pref, brand));
     }
     reduce_colors(&mut assign, color_count as usize);
     Ok(compact(board, &assign))
+}
+
+/// 每个输出格取源图对应区域左上角像素，结果只由输入和板尺寸决定。
+fn resize_nearest(img: &RgbaImage, board: u32) -> RgbaImage {
+    let mut out = RgbaImage::new(board, board);
+    let sw = img.width().max(1);
+    let sh = img.height().max(1);
+    for y in 0..board {
+        let sy = ((y as u64 * sh as u64) / board as u64).min(sh as u64 - 1) as u32;
+        for x in 0..board {
+            let sx = ((x as u64 * sw as u64) / board as u64).min(sw as u64 - 1) as u32;
+            out.put_pixel(x, y, *img.get_pixel(sx, sy));
+        }
+    }
+    out
 }
 
 pub fn render_preview_png(pattern: &Pattern) -> Result<Vec<u8>, PixelError> {
@@ -466,15 +562,73 @@ fn flatten_on_white(img: &DynamicImage) -> RgbaImage {
     out
 }
 
-fn nearest(rgb: [u8; 3], pref: Pref) -> u8 {
+fn brand_allows(brand: Brand, code: &str) -> bool {
+    match brand {
+        Brand::Generic => true,
+        Brand::Shop => matches!(
+            code,
+            "A1" | "B3" | "C2" | "D1" | "K9" | "E4" | "E7" | "W0" | "F1" | "H1"
+        ),
+        Brand::Mard => matches!(
+            code,
+            "A1" | "B3"
+                | "C2"
+                | "D1"
+                | "K9"
+                | "E4"
+                | "E7"
+                | "W0"
+                | "F1"
+                | "H1"
+                | "R2"
+                | "O1"
+                | "Y2"
+                | "G2"
+                | "N1"
+                | "C1"
+                | "W1"
+                | "N2"
+                | "M1"
+        ),
+        Brand::Perler => matches!(
+            code,
+            "A1" | "K9"
+                | "W0"
+                | "S1"
+                | "G1"
+                | "R1"
+                | "Y1"
+                | "G3"
+                | "B1"
+                | "P2"
+                | "N3"
+                | "T1"
+                | "D1"
+                | "E7"
+                | "C1"
+                | "B2"
+                | "O1"
+        ),
+    }
+}
+
+fn nearest(rgb: [u8; 3], pref: Pref, brand: Brand) -> u8 {
     let mut best_i = 0u8;
     let mut best_d = i32::MAX;
+    let mut any = false;
     for (i, bead) in BEADS.iter().enumerate() {
+        if !brand_allows(brand, bead.code) {
+            continue;
+        }
+        any = true;
         let d = dist2(rgb, bead.rgb) + penalty(bead, pref);
         if d < best_d {
             best_d = d;
             best_i = i as u8;
         }
+    }
+    if !any {
+        return nearest(rgb, pref, Brand::Generic);
     }
     best_i
 }
@@ -695,5 +849,21 @@ mod tests {
             .palette
             .iter()
             .any(|s| s.code == "A1" || s.code == "B3"));
+    }
+
+    #[test]
+    fn nearest_grid_and_shop_brand_stay_on_sku_list() {
+        let png = solid_png([255, 255, 255]);
+        let pattern = pixelate_beads(&png, 52, 8, Pref::Auto, Brand::Shop).unwrap();
+        assert_eq!(pattern.palette.len(), 1);
+        assert_eq!(pattern.palette[0].code, "W0");
+        let shop = ["A1", "B3", "C2", "D1", "K9", "E4", "E7", "W0", "F1", "H1"];
+        let mixed = scene_png("cat").unwrap();
+        let pattern = pixelate_beads(&mixed, 52, 12, Pref::Auto, Brand::Shop).unwrap();
+        assert!(pattern
+            .palette
+            .iter()
+            .all(|s| shop.contains(&s.code.as_str())));
+        assert_eq!(pattern.cells.len(), 52 * 52);
     }
 }
