@@ -80,12 +80,24 @@ pub async fn publish(
         return Err(AppError::Forbidden("只能发布自己的稿件".into()));
     }
 
-    let title = match title.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(t) => trim_chars(t, 40),
-        None => draft.title,
+    let explicit = match title.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => Some(crate::services::drafts::normalize_title(raw)?),
+        None => None,
     };
+    // 带了标题就写回稿件，避免稿件库和「继续拼」仍显示「未命名草稿」。
+    let rename_draft = explicit.as_ref().is_some_and(|next| next != &draft.title);
+    let title = explicit.clone().unwrap_or_else(|| draft.title.clone());
 
     let work_id = Uuid::new_v4();
+    let mut tx = state.db.begin().await?;
+    if rename_draft {
+        sqlx::query("UPDATE drafts SET title = $2 WHERE id = $1 AND user_id = $3")
+            .bind(draft_id)
+            .bind(&title)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     sqlx::query(
         r#"
         INSERT INTO works (
@@ -105,8 +117,9 @@ pub async fn publish(
     .bind(draft.color_count)
     .bind(draft.peg_count)
     .bind(&draft.preview_key)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     get_work(state, Some(user_id), work_id).await
 }

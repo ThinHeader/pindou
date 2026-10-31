@@ -45,11 +45,19 @@ pub struct PublishRequest {
     pub category: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RenameRequest {
+    pub title: Option<String>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/drafts/generate", post(generate))
         .route("/drafts", get(list))
-        .route("/drafts/{id}", get(detail))
+        .route(
+            "/drafts/{id}",
+            get(detail).put(rename).patch(rename).delete(delete_draft),
+        )
         .route("/drafts/{id}/favorite", post(favorite))
         .route("/drafts/{id}/publish", post(publish))
 }
@@ -102,6 +110,26 @@ async fn detail(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<drafts::DraftDetail>> {
     Ok(Json(drafts::get_detail(&state, auth.user_id, id).await?))
+}
+
+async fn rename(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<RenameRequest>,
+) -> AppResult<Json<drafts::DraftDetail>> {
+    let title = body.title.unwrap_or_default();
+    Ok(Json(
+        drafts::rename(&state, auth.user_id, id, &title).await?,
+    ))
+}
+
+async fn delete_draft(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<drafts::DeleteOutput>> {
+    Ok(Json(drafts::delete_owned(&state, auth.user_id, id).await?))
 }
 
 async fn favorite(

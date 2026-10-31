@@ -1,4 +1,4 @@
-//! 稿件：出稿、列表、详情、收藏、发布到广场。
+//! 稿件：出稿、列表、详情、改名、删除、收藏、发布到广场。
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
@@ -58,6 +58,13 @@ pub struct DraftDetail {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DeleteOutput {
+    pub deleted: bool,
+    /// 这张稿已经发布时，广场作品会一起删除。
+    pub work_deleted: bool,
+}
+
 #[derive(Debug)]
 pub struct GenerateInput {
     pub image_base64: Option<String>,
@@ -89,6 +96,8 @@ pub async fn generate(
     let pref = match input.palette_pref.as_deref().unwrap_or("auto") {
         raw => Pref::parse(raw).ok_or_else(|| AppError::BadRequest("色系偏好无效".into()))?,
     };
+    // 标题不合法时直接拒绝，避免先算图再失败。空标题走默认名，不在这里报错。
+    let title = pick_title(input.title.as_deref(), input.image_ref.as_deref())?;
 
     // 先看余额，图片失败时不会扣分；真正扣减仍在事务里再查一次。
     let snapshot = credits::view(state, user_id).await?;
@@ -114,7 +123,6 @@ pub async fn generate(
         .put_object(&preview_key, &preview, "image/png")
         .await?;
 
-    let title = pick_title(input.title.as_deref(), input.image_ref.as_deref());
     let source_key = source_key_from_ref(input.image_ref.as_deref(), &state.config.public_base_url);
     let palette_json = palette_value(&pattern);
     let actual_colors = pattern.palette.len() as i32;
@@ -296,6 +304,96 @@ pub async fn toggle_favorite(pool: &PgPool, user_id: Uuid, draft_id: Uuid) -> Ap
     Ok(false)
 }
 
+pub fn normalize_title(raw: &str) -> AppResult<String> {
+    let title = raw.trim();
+    let len = title.chars().count();
+    if len == 0 {
+        return Err(AppError::BadRequest("请填写稿件名称".into()));
+    }
+    if len > 40 {
+        return Err(AppError::BadRequest("稿件名称请控制在 40 字以内".into()));
+    }
+    Ok(title.to_string())
+}
+
+pub async fn rename(
+    state: &AppState,
+    user_id: Uuid,
+    draft_id: Uuid,
+    title: &str,
+) -> AppResult<DraftDetail> {
+    let title = normalize_title(title)?;
+    gate_owner(&state.db, user_id, draft_id, "修改").await?;
+    let updated = sqlx::query("UPDATE drafts SET title = $3 WHERE id = $1 AND user_id = $2")
+        .bind(draft_id)
+        .bind(user_id)
+        .bind(&title)
+        .execute(&state.db)
+        .await?;
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound("稿件不存在".into()));
+    }
+    get_detail(state, user_id, draft_id).await
+}
+
+/// 删除自己的稿。
+///
+/// 已发布的稿会连同广场作品一起删除（点赞、收藏、评论随作品外键级联）。
+/// 没有单独的下架入口，只拒绝会让已发布稿永远删不掉。
+/// 官方模板不删。预览图在事务提交后清理，上传原图保留。
+pub async fn delete_owned(
+    state: &AppState,
+    user_id: Uuid,
+    draft_id: Uuid,
+) -> AppResult<DeleteOutput> {
+    let row = gate_owner(&state.db, user_id, draft_id, "删除").await?;
+    let mut tx = state.db.begin().await?;
+    let works = sqlx::query("DELETE FROM works WHERE draft_id = $1")
+        .bind(draft_id)
+        .execute(&mut *tx)
+        .await?;
+    let gone = sqlx::query("DELETE FROM drafts WHERE id = $1 AND user_id = $2")
+        .bind(draft_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    if gone.rows_affected() == 0 {
+        return Err(AppError::NotFound("稿件不存在".into()));
+    }
+    tx.commit().await?;
+    let _ = state.storage.delete_object(&row.preview_key).await;
+    Ok(DeleteOutput {
+        deleted: true,
+        work_deleted: works.rows_affected() > 0,
+    })
+}
+
+async fn gate_owner(
+    pool: &PgPool,
+    user_id: Uuid,
+    draft_id: Uuid,
+    verb: &str,
+) -> AppResult<DraftGateRow> {
+    let row = sqlx::query_as::<_, DraftGateRow>(
+        r#"
+        SELECT user_id, is_official, is_template, preview_key
+        FROM drafts WHERE id = $1
+        "#,
+    )
+    .bind(draft_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("稿件不存在".into()))?;
+
+    if row.user_id != user_id {
+        return Err(AppError::Forbidden(format!("只能{verb}自己的稿件")));
+    }
+    if row.is_official || row.is_template {
+        return Err(AppError::Forbidden(format!("官方模板不能{verb}")));
+    }
+    Ok(row)
+}
+
 async fn load_image_bytes(
     state: &AppState,
     b64: Option<&str>,
@@ -338,17 +436,17 @@ fn source_key_from_ref(refer: Option<&str>, public_base: &str) -> Option<String>
     }
 }
 
-fn pick_title(explicit: Option<&str>, refer: Option<&str>) -> String {
+fn pick_title(explicit: Option<&str>, refer: Option<&str>) -> AppResult<String> {
     if let Some(title) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
-        return title.chars().take(40).collect();
+        return normalize_title(title);
     }
-    match refer.map(str::trim) {
+    Ok(match refer.map(str::trim) {
         Some("builtin:cat") => "小橘猫吐舌".into(),
         Some("builtin:bear") => "黄油小熊".into(),
         Some("builtin:chick") => "柠檬汽水".into(),
         Some("builtin:bunny") => "蜜桃兔耳".into(),
         _ => "未命名草稿".into(),
-    }
+    })
 }
 
 fn normalize_tab(tab: &str) -> AppResult<&'static str> {
@@ -470,6 +568,14 @@ fn detail_from_row(state: &AppState, viewer: Uuid, row: &DraftDetailRow) -> Draf
         work_id: row.work_id,
         created_at: row.created_at,
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct DraftGateRow {
+    user_id: Uuid,
+    is_official: bool,
+    is_template: bool,
+    preview_key: String,
 }
 
 #[derive(sqlx::FromRow)]

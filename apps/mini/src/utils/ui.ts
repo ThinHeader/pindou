@@ -14,6 +14,55 @@ export function showTip(title: string) {
   uni.showToast({ title, icon: 'none' })
 }
 
+export function askConfirm(title: string, content: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    uni.showModal({
+      title,
+      content,
+      cancelText: '取消',
+      confirmText: '删除',
+      confirmColor: '#FF6B5B',
+      success: (res) => resolve(Boolean(res.confirm)),
+      fail: () => resolve(false),
+    })
+  })
+}
+
+/** 点取消返回 null；点确定返回去掉首尾空格后的内容（可能是空字符串）。 */
+export function askText(title: string, content = '', placeholder = ''): Promise<string | null> {
+  return new Promise((resolve) => {
+    uni.showModal({
+      title,
+      editable: true,
+      placeholderText: placeholder,
+      cancelText: '取消',
+      confirmText: '确定',
+      content,
+      success: (res) => {
+        if (!res.confirm) {
+          resolve(null)
+          return
+        }
+        resolve(String((res as { content?: string }).content || '').trim())
+      },
+      fail: () => resolve(null),
+    })
+  })
+}
+
+export function checkedDraftTitle(raw: string): string | null {
+  const title = raw.trim()
+  if (!title) {
+    showError({ message: '请填写稿件名称' })
+    return null
+  }
+  if ([...title].length > 40) {
+    showError({ message: '稿件名称请控制在 40 字以内' })
+    return null
+  }
+  return title
+}
+
 export function ensureLogin(): boolean {
   const user = useUserStore()
   if (user.isLoggedIn) return true

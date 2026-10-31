@@ -29,12 +29,17 @@ onShow(async () => {
   }
 })
 
+function prepareTitle() {
+  create.title = create.referenceTitle.trim()
+}
+
 function pick(source: 'camera' | 'album') {
   if (!ensureLogin()) return
   if (!credits.canGenerate) {
     credits.openEmptySheet()
     return
   }
+  prepareTitle()
   uni.chooseImage({
     count: 1,
     sizeType: ['compressed'],
@@ -61,6 +66,7 @@ function useSample() {
     credits.openEmptySheet()
     return
   }
+  prepareTitle()
   create.useBuiltin('cat', '小橘猫')
   uni.navigateTo({ url: '/pages/create/params' })
 }

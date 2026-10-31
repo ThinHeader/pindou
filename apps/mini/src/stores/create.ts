@@ -16,6 +16,8 @@ export const useCreateStore = defineStore('create', {
     boardSize: 52 as BoardSize,
     colorCount: 12,
     palettePref: 'auto' as PalettePref,
+    /** 本次出稿要保存的稿件名。空则交给后端默认名。 */
+    title: '',
     referenceTitle: '',
     generating: false,
     lastDraft: null as DraftDetail | null,
@@ -68,15 +70,17 @@ export const useCreateStore = defineStore('create', {
       }
       this.generating = true
       try {
+        const named = this.title.trim()
         const data = await draftsApi.generate({
           image_ref: this.imageKey || (this.builtin ? `builtin:${this.builtin}` : undefined),
           image_base64: this.imageKey || this.builtin ? undefined : this.imageBase64 || undefined,
           board_size: this.boardSize,
           color_count: this.colorCount,
           palette_pref: this.palettePref,
-          title: this.referenceTitle || undefined,
+          title: named || undefined,
         })
         this.lastDraft = data.draft
+        this.title = ''
         credits.balance = data.balance
         return data
       } finally {

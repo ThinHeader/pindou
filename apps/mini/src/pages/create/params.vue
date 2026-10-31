@@ -66,6 +66,18 @@ async function generate() {
       </view>
     </view>
 
+    <view class="sec-title"><text>稿件名称</text></view>
+    <view class="name-card">
+      <input
+        v-model="create.title"
+        class="name-input"
+        maxlength="40"
+        placeholder="例如：窗边的猫"
+        confirm-type="done"
+      />
+    </view>
+    <text class="name-hint">可不填。拍照或相册出稿不填时，会保存为「未命名草稿」。</text>
+
     <view class="sec-title"><text>珠板尺寸</text></view>
     <view
       v-for="item in sizes"
@@ -142,6 +154,14 @@ async function generate() {
 .name { display: block; font-size: 30rpx; font-weight: 700; }
 .sub { display: block; margin-top: 6rpx; color: $ink-3; font-size: 24rpx; }
 .change { display: inline-block; margin-top: 12rpx; color: $brand-dark; font-size: 24rpx; font-weight: 650; }
+.name-card {
+  background: $card;
+  border: 1rpx solid $line;
+  border-radius: 20rpx;
+  padding: 8rpx 24rpx;
+}
+.name-input { height: 80rpx; font-size: 30rpx; color: $ink; }
+.name-hint { display: block; margin-top: 12rpx; color: $ink-3; font-size: 22rpx; line-height: 1.5; }
 .option {
   display: flex;
   align-items: center;
