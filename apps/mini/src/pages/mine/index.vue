@@ -134,7 +134,7 @@ function rename() {
       <view class="work add" @click="goCreate">＋ 发布</view>
     </view>
     <view v-else class="empty">发布到广场的作品会出现在这里</view>
-  </view>
+</view>
 </template>
 
 <style scoped lang="scss">
@@ -177,6 +177,6 @@ function rename() {
 .wname { display: block; padding: 10rpx 12rpx 14rpx; font-size: 22rpx; font-weight: 650; }
 .add {
   display: flex; align-items: center; justify-content: center;
-  color: $brand-dark; background: $brand-lighter; border: 1rpx dashed #F0C4BC; min-height: 200rpx;
+  color: $brand-dark; background: $brand-lighter; border: 1rpx dashed #F0C4BC; min-height: 140rpx;
 }
 </style>

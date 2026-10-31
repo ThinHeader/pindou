@@ -32,7 +32,9 @@ async function load() {
   }
 }
 
-onShow(load)
+onShow(() => {
+  load()
+})
 
 function pick(id: string) {
   tab.value = id
@@ -82,7 +84,7 @@ function openWork(id: string) {
       </view>
     </view>
     <view v-else class="empty">这个分类还没有作品</view>
-  </view>
+</view>
 </template>
 
 <style scoped lang="scss">
@@ -111,13 +113,18 @@ function openWork(id: string) {
   border: 1rpx solid $line;
 }
 .chip.on { background: $brand-soft; color: $brand-dark; border-color: transparent; font-weight: 700; }
-.grid { display: flex; flex-wrap: wrap; gap: 16rpx; }
+.grid {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
 .card {
-  width: calc(50% - 8rpx);
-  background: $card;
-  border-radius: 24rpx;
-  overflow: hidden;
-  border: 1rpx solid $line;
+  flex: 0 0 340rpx;
+  width: 340rpx;
+  max-width: 340rpx;
+  margin-bottom: 16rpx;
+  box-sizing: border-box;
 }
 .cover { width: 100%; height: 300rpx; background: $brand-lighter; display: block; }
 .meta { padding: 12rpx 16rpx 18rpx; }
