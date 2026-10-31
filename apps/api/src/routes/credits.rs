@@ -1,29 +1,33 @@
-//! 积分：查询 / 日领 / 广告奖励
+//! 积分：查询 / 日领 / 广告 / 示意充值
 
 use axum::{
-    Json, Router,
-    extract::State,
+    extract::{Path, Query, State},
     routing::{get, post},
+    Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::AppResult;
-use crate::{AppState, services};
+use crate::extract::AuthUser;
+use crate::services::credits::{self, CreditMutation, CreditsView, LedgerItem, OrderView, Pack};
+use crate::state::AppState;
 
-#[derive(Debug, Serialize)]
-pub struct CreditsMeResponse {
-    pub balance: i32,
-    pub daily_grant: i32,
-    pub generate_cost: i32,
-    pub ad_reward: i32,
-    pub daily_claimed_today: bool,
+#[derive(Debug, Deserialize)]
+pub struct LedgerQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateOrderRequest {
+    pub pack_code: String,
 }
 
 #[derive(Debug, Serialize)]
-pub struct CreditsMutationResponse {
+pub struct PayResponse {
+    pub order: OrderView,
     pub balance: i32,
     pub delta: i32,
-    pub reason: String,
 }
 
 pub fn router() -> Router<AppState> {
@@ -31,37 +35,68 @@ pub fn router() -> Router<AppState> {
         .route("/credits/me", get(me))
         .route("/credits/daily-claim", post(daily_claim))
         .route("/credits/ad-reward", post(ad_reward))
+        .route("/credits/ledger", get(ledger))
+        .route("/credits/packs", get(packs))
+        .route("/credits/orders", post(create_order))
+        .route("/credits/orders/{id}/mock-callback", post(mock_callback))
 }
 
-async fn me(State(state): State<AppState>) -> AppResult<Json<CreditsMeResponse>> {
-    let balance = *state.demo_credits.lock().await;
-    Ok(Json(CreditsMeResponse {
-        balance,
-        daily_grant: services::credits::DAILY_GRANT,
-        generate_cost: services::credits::GENERATE_COST,
-        ad_reward: services::credits::AD_REWARD,
-        daily_claimed_today: false,
-    }))
+async fn me(State(state): State<AppState>, auth: AuthUser) -> AppResult<Json<CreditsView>> {
+    Ok(Json(credits::view(&state, auth.user_id).await?))
 }
 
 async fn daily_claim(
     State(state): State<AppState>,
-) -> AppResult<Json<CreditsMutationResponse>> {
-    let mut bal = state.demo_credits.lock().await;
-    *bal = services::credits::apply_daily_claim(*bal);
-    Ok(Json(CreditsMutationResponse {
-        balance: *bal,
-        delta: services::credits::DAILY_GRANT,
-        reason: "daily_claim".into(),
+    auth: AuthUser,
+) -> AppResult<Json<CreditMutation>> {
+    Ok(Json(credits::daily_claim(&state, auth.user_id).await?))
+}
+
+async fn ad_reward(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> AppResult<Json<CreditMutation>> {
+    Ok(Json(credits::ad_reward(&state, auth.user_id).await?))
+}
+
+async fn ledger(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Query(q): Query<LedgerQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let items: Vec<LedgerItem> =
+        credits::ledger(&state.db, auth.user_id, q.limit.unwrap_or(20)).await?;
+    Ok(Json(serde_json::json!({ "items": items })))
+}
+
+async fn packs() -> Json<serde_json::Value> {
+    let items: Vec<&Pack> = credits::PACKS.iter().collect();
+    Json(serde_json::json!({
+        "items": items,
+        "mock": true,
+        "note": "示意档位，mock-callback 直接到账，不会产生真实扣款"
     }))
 }
 
-async fn ad_reward(State(state): State<AppState>) -> AppResult<Json<CreditsMutationResponse>> {
-    let mut bal = state.demo_credits.lock().await;
-    *bal = services::credits::apply_ad_reward(*bal);
-    Ok(Json(CreditsMutationResponse {
-        balance: *bal,
-        delta: services::credits::AD_REWARD,
-        reason: "ad_reward".into(),
+async fn create_order(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<CreateOrderRequest>,
+) -> AppResult<Json<OrderView>> {
+    Ok(Json(
+        credits::create_order(&state.db, auth.user_id, &body.pack_code).await?,
+    ))
+}
+
+async fn mock_callback(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<PayResponse>> {
+    let (order, balance, delta) = credits::mock_pay(&state, auth.user_id, id).await?;
+    Ok(Json(PayResponse {
+        order,
+        balance,
+        delta,
     }))
 }

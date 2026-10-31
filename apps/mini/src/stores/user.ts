@@ -1,22 +1,20 @@
 import { defineStore } from 'pinia'
-import { authApi } from '../api/http'
+import { authApi, errorOf } from '../api/http'
+import type { MeProfile, UserInfo } from '../api/types'
 
 const TOKEN_KEY = 'pindou_token'
 const USER_KEY = 'pindou_user'
-
-export interface UserInfo {
-  id: string
-  nickname: string
-  avatar_url?: string | null
-}
+const DEV_CODE_KEY = 'pindou_dev_login_code'
 
 export const useUserStore = defineStore('user', {
   state: () => ({
     token: '' as string,
     user: null as UserInfo | null,
+    profile: null as MeProfile | null,
   }),
   getters: {
     isLoggedIn: (s) => Boolean(s.token),
+    nickname: (s) => s.user?.nickname || '拼豆玩家',
   },
   actions: {
     hydrate() {
@@ -25,31 +23,67 @@ export const useUserStore = defineStore('user', {
         const raw = uni.getStorageSync(USER_KEY)
         if (raw) this.user = typeof raw === 'string' ? JSON.parse(raw) : raw
       } catch {
-        /* ignore */
+        this.token = ''
+        this.user = null
       }
     },
     persist() {
       uni.setStorageSync(TOKEN_KEY, this.token)
       uni.setStorageSync(USER_KEY, JSON.stringify(this.user))
     },
-    /** 演示登录（不接真微信） */
-    async loginDemo() {
-      try {
-        const data = await authApi.wxLogin('demo-code')
-        this.token = data.token
-        this.user = data.user
-        this.persist()
-      } catch {
-        this.token = 'dev-token'
-        this.user = { id: 'local', nickname: '拼豆玩家' }
-        this.persist()
-      }
-    },
     logout() {
       this.token = ''
       this.user = null
+      this.profile = null
       uni.removeStorageSync(TOKEN_KEY)
       uni.removeStorageSync(USER_KEY)
+    },
+    devCode() {
+      let code = uni.getStorageSync(DEV_CODE_KEY) as string
+      if (!code) {
+        code = `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+        uni.setStorageSync(DEV_CODE_KEY, code)
+      }
+      return code
+    },
+    async obtainCode() {
+      const useWx = import.meta.env.VITE_WX_LOGIN === '1'
+      if (!useWx) return this.devCode()
+      return new Promise<string>((resolve) => {
+        uni.login({
+          provider: 'weixin',
+          success: (res) => resolve(res.code || this.devCode()),
+          fail: () => resolve(this.devCode()),
+        })
+      })
+    },
+    async login() {
+      const code = await this.obtainCode()
+      const data = await authApi.wxLogin(code)
+      this.token = data.token
+      this.user = data.user
+      this.persist()
+      return data
+    },
+    async refreshProfile() {
+      if (!this.token) return null
+      try {
+        const profile = await authApi.me()
+        this.profile = profile
+        this.user = profile.user
+        this.persist()
+        return profile
+      } catch (e) {
+        if (errorOf(e).statusCode === 401) this.logout()
+        throw e
+      }
+    },
+    async rename(nickname: string) {
+      const profile = await authApi.patchMe(nickname)
+      this.profile = profile
+      this.user = profile.user
+      this.persist()
+      return profile
     },
   },
 })

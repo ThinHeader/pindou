@@ -1,110 +1,103 @@
 # 拼豆（pindou）
 
-微信小程序「拼豆」可运行工程骨架：uni-app Vue3 + TypeScript + Pinia 前端，Rust axum 后端，PostgreSQL + Redis 本地依赖。
+微信小程序「拼豆」可运行 MVP：uni-app Vue3 + TypeScript + Pinia，Rust axum + PostgreSQL + Redis。
 
-视觉与页面流程对齐设计原型 **`/workspace/pindou-html`**（纯 HTML 高保真稿），本仓库是正式工程，**不会覆盖**该原型目录。
+拍照或选一张图，按 52 / 78 / 104 珠板和色数生成色号稿；积分规则是每日 +3、成功出稿 −1、激励广告 +1。广场可以点赞、收藏、评论。
+
+视觉对齐设计原型：品牌色 `#FF6B5B`，暖底、圆角卡片。原型 zip 只作对照，不进本仓库。
 
 ## 目录
 
 ```
-pindou/
-  README.md
-  docker-compose.yml          # postgres:16 + redis:7
-  apps/
-    mini/                     # uni-app 小程序（手写最小结构）
-    api/                      # Rust axum 后端
-  packages/                   # 共享说明（可选）
-  docs/
-    api.md                    # 接口草图
+README.md
+docker-compose.yml          # postgres:16 + redis:7
+rust-toolchain.toml         # Rust 1.99
+apps/mini/                  # uni-app 小程序
+apps/api/                   # axum API、SQL migration、集成测试
+docs/api.md                 # 接口说明
 ```
 
-## 积分规则
+## 积分
 
 | 动作 | 积分 |
 |------|------|
-| 每日领取 | +3 |
-| 成功出稿 | −1 |
+| 每日领取 | +3（东八区每天一次，Redis 幂等） |
+| 成功出稿 | −1（图片失败不扣） |
 | 激励广告 | +1 |
-| 充值档位 | 占位（见 `docs/api.md`） |
+| 充值 | 10 / ¥6，35 / ¥18，60 / ¥30（示意下单 + mock 回调） |
 
-## 1. 起本地数据库
+## 1. 起数据库
 
-需已安装 Docker。
+需要 Docker。
 
 ```bash
-cd pindou
 docker compose up -d
 ```
 
-- Postgres：`127.0.0.1:5432`，用户/密码/库均为 `pindou` / `pindou_dev` / `pindou`
+- Postgres：`127.0.0.1:5432`，用户 / 密码 / 库 `pindou` / `pindou_dev` / `pindou`
 - Redis：`127.0.0.1:6379`
 
-环境变量模板：`apps/api/.env.example`（复制为 `apps/api/.env`）。
-
-当前 API **stub 可不连库**即可启动；有库后再接 sqlx migrate。
+没有 Docker 时，本机装同版本的 PostgreSQL 16 和 Redis 7，建同样的账号即可。
 
 ## 2. 起 API
 
+工具链：Rust 1.99（仓库根目录有 `rust-toolchain.toml`，rustup 会自动装）。
+
 ```bash
 cd apps/api
-cp .env.example .env   # 可选
+cp .env.example .env    # 按需改，不要提交 .env
 cargo run
-# 或仅检查：cargo check
 ```
 
-默认监听 `http://127.0.0.1:3000`。
-
-试一下：
+进程启动时会执行 `migrations/` 并写入官方模板。默认听 `http://127.0.0.1:3000`。对象文件落在 `apps/api/data/objects`（已 gitignore）。
 
 ```bash
 curl http://127.0.0.1:3000/health
-curl -X POST http://127.0.0.1:3000/api/v1/auth/wx-login -H 'content-type: application/json' -d '{"code":"demo"}'
-curl http://127.0.0.1:3000/api/v1/credits/me
+curl -X POST http://127.0.0.1:3000/api/v1/auth/wx-login \
+  -H 'content-type: application/json' \
+  -d '{"code":"mock:demo"}'
 ```
 
-主要路由：
+把返回的 `token` 放到后面的 `Authorization: Bearer`。
 
-- `GET /health`
-- `POST /api/v1/auth/wx-login`
-- `GET /api/v1/credits/me`
-- `POST /api/v1/credits/daily-claim`
-- `POST /api/v1/credits/ad-reward`
-- `POST /api/v1/drafts/generate`
-- `GET /api/v1/plaza/feed`（stub）
+微信真登录：在 `.env` 填 `WX_APPID` 和 `WX_SECRET`。留空则走开发态，同一 `code` 对应同一用户，不会请求微信。
 
-## 3. 起小程序前端（mini）
+## 3. 测试
 
-`apps/mini` 为 **手写 uni-app Vue3 + Vite + TS 最小结构**，避免强依赖 `@dcloudio/uvm` 交互安装。
+Postgres 和 Redis 要先起来（和 `cargo run` 同一套 `DATABASE_URL` / `REDIS_URL`）。
 
-可选方式：
+```bash
+cd apps/api
+cargo test
+```
 
-1. **HBuilderX**：打开 `apps/mini`，运行到微信开发者工具 / 浏览器。
-2. **CLI（后续）**：在 `apps/mini` 执行 `npm i`，按需启用 `vite.config.ts` 里的 `@dcloudio/vite-plugin-uni`，再 `npm run dev:mp-weixin`。
+覆盖：开发态登录、日领 Redis 幂等、坏图不扣分、色号稿落库、广场点赞评论、示意充值回调、余额不足 402。
 
-API 基址：`src/api/http.ts` → `http://127.0.0.1:3000`。
+## 4. 小程序
 
-UI：品牌色珊瑚红 `#FF6B5B`，tokens 见 `src/uni.scss`。可选 UI 库 `wot-design-uni`（`package.json` 中已注释说明）。
+`apps/mini` 是 uni-app Vue3 + TS + Pinia，请求真实 HTTP。基址：
 
-页面含：首页 / 广场 / 出稿 / 稿件库 / 我的（5 Tab），以及参数、预览、充值、稿件详情、作品详情、登录；积分不足用 `CreditEmptySheet` 弹层。
+```bash
+cd apps/mini
+cp .env.example .env   # VITE_API_BASE=http://127.0.0.1:3000
+npm install            # .npmrc 已打开 legacy-peer-deps，对齐 uni-app 与 Vue 3.4
+```
 
-## 4. 与设计原型的关系
+微信开发者工具：
 
-| 路径 | 用途 |
-|------|------|
-| `pindou-html/` | 静态高保真原型，浏览器直接打开 |
-| `pindou/`（本仓库） | 可运行前后端骨架，接微信与真实服务 |
+1. 用 HBuilderX 打开 `apps/mini`，运行到微信开发者工具；或 `npm run dev:mp-weixin`（需装好 `@dcloudio/vite-plugin-uni`）。
+2. 模拟器可访问 `127.0.0.1`。真机改成电脑局域网 IP，并在开发者工具关闭「校验合法域名」（`manifest.json` 里 `urlCheck` 已是 false）。
+3. 开发态不要设 `VITE_WX_LOGIN`。登录页「微信一键登录」会使用本机保存的稳定 mock code。后端配好 AppId/Secret 后，再把 `VITE_WX_LOGIN=1`，才会把 `uni.login` 的 code 交给 code2session。
 
-实现时以原型交互与视觉为准，接口以 `docs/api.md` 为准。
+建议走一遍：登录 → 领取今日 +3 → 出稿（拍照 / 相册 / 示例图）→ 选 52·78·104 和色数 → 预览色号 → 稿件库 → 发布到广场 → 点赞评论。积分为 0 时会弹出「看广告 / 去充值」。
 
 ## 5. 对象存储
 
-`apps/api/src/services/storage.rs` 为 COS/OSS 接口占位，本地 `DevStorage` stub。
+`apps/api/src/services/storage.rs` 的本地实现返回 `key` / `url` / `etag` / `content_type`，和 COS PutObject 的使用方式对齐。换成 COS 时保持这几个字段即可。
 
-## 开发说明
+## 接口
 
-- 后端无 DB 时也应能 `cargo check`（sqlx 使用 runtime query，未强制编译期连库）。
-- 微信登录未配置 `WX_APPID` 时返回演示用户 + 开发 JWT。
-- 前端默认本地积分 store，可离线演示扣分 / 日领 / 广告；有 API 时优先打后端。
+详见 [docs/api.md](docs/api.md)。
 
 ## License
 

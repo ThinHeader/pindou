@@ -1,15 +1,30 @@
 <script setup lang="ts">
 import { useUserStore } from '../../stores/user'
+import { showError } from '../../utils/ui'
 
 const user = useUserStore()
 
 async function wxLogin() {
-  await user.loginDemo()
-  uni.showToast({ title: '登录成功（演示）', icon: 'success' })
-  setTimeout(() => uni.switchTab({ url: '/pages/mine/index' }), 400)
+  uni.showLoading({ title: '登录中' })
+  try {
+    const data = await user.login()
+    uni.showToast({
+      title: data.mode === 'wechat' ? '微信登录成功' : '开发态登录成功',
+      icon: 'success',
+    })
+    setTimeout(() => uni.switchTab({ url: '/pages/home/index' }), 400)
+  } catch (e) {
+    showError(e, '登录失败')
+  } finally {
+    uni.hideLoading()
+  }
 }
+
 function guest() {
-  uni.switchTab({ url: '/pages/home/index' })
+  uni.switchTab({ url: '/pages/plaza/index' })
+}
+function showLegal() {
+  uni.showToast({ title: '协议页即将开放', icon: 'none' })
 }
 </script>
 
@@ -17,9 +32,17 @@ function guest() {
   <view class="page">
     <view class="logo">豆</view>
     <text class="title">拼豆</text>
-    <text class="sub">拍照出稿 · 色号拼豆</text>
-    <view class="btn primary" @click="wxLogin">微信一键登录（演示）</view>
-    <view class="btn ghost" @click="guest">先逛逛</view>
+    <text class="tagline">把喜欢的图，变成可拼的色号稿</text>
+
+    <view class="feats">
+      <view class="feat"><text class="fico">📷</text><view><text class="ft">一键出稿</text><text class="fs">拍照 / 相册 → 珠板色号图</text></view></view>
+      <view class="feat"><text class="fico">▦</text><view><text class="ft">广场灵感</text><text class="fs">照着做热门作品，少踩坑</text></view></view>
+      <view class="feat"><text class="fico">🎨</text><view><text class="ft">稿件库</text><text class="fs">模板、收藏、用豆清单随身带</text></view></view>
+    </view>
+
+    <view class="btn primary" @click="wxLogin">微信一键登录</view>
+    <view class="btn ghost" @click="guest">先逛逛广场</view>
+    <text class="legal" @click="showLegal">登录即表示同意《用户协议》与《隐私政策》</text>
   </view>
 </template>
 
@@ -29,28 +52,24 @@ function guest() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 48rpx;
-  background: linear-gradient(160deg, #FFF8F5, $bg);
+  padding: 120rpx 48rpx 48rpx;
+  background: linear-gradient(180deg, #fff8f5, $bg 42%);
 }
 .logo {
-  width: 120rpx; height: 120rpx; border-radius: 32rpx;
-  background: linear-gradient(135deg, $brand, $warm);
-  color: #fff; font-size: 48rpx; font-weight: 800;
-  display: flex; align-items: center; justify-content: center;
-  margin-bottom: 24rpx;
-  box-shadow: 0 12rpx 32rpx rgba(255, 107, 91, 0.35);
+  width: 140rpx; height: 140rpx; border-radius: 40rpx;
+  background: linear-gradient(135deg, $brand, $warm); color: #fff;
+  font-size: 60rpx; font-weight: 800; text-align: center; line-height: 140rpx;
+  box-shadow: 0 16rpx 36rpx rgba(255, 107, 91, 0.28);
 }
-.title { font-size: 48rpx; font-weight: 800; color: $ink; }
-.sub { color: $ink-3; margin: 12rpx 0 64rpx; font-size: 28rpx; }
-.btn {
-  width: 100%;
-  text-align: center;
-  padding: 28rpx;
-  border-radius: 999rpx;
-  font-weight: 700;
-  margin-bottom: 20rpx;
-}
+.title { margin-top: 24rpx; font-size: 56rpx; font-weight: 800; }
+.tagline { margin-top: 8rpx; color: $ink-3; font-size: 28rpx; }
+.feats { width: 100%; margin: 48rpx 0 36rpx; display: flex; flex-direction: column; gap: 16rpx; }
+.feat { display: flex; gap: 16rpx; align-items: center; background: $card; border-radius: 20rpx; padding: 20rpx; border: 1rpx solid $line; }
+.fico { font-size: 36rpx; }
+.ft { display: block; font-weight: 750; }
+.fs { display: block; color: $ink-3; font-size: 22rpx; margin-top: 4rpx; }
+.btn { width: 100%; text-align: center; padding: 26rpx; border-radius: 999rpx; font-weight: 750; margin-bottom: 16rpx; }
 .primary { background: $brand; color: #fff; }
-.ghost { color: $ink-3; }
+.ghost { color: $ink-2; }
+.legal { margin-top: 12rpx; font-size: 22rpx; color: $ink-3; line-height: 1.6; text-align: center; }
 </style>

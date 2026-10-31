@@ -1,14 +1,14 @@
 import { defineStore } from 'pinia'
-import { creditsApi, draftsApi } from '../api/http'
-
-const STORAGE_KEY = 'pindou_credits_balance'
+import { creditsApi, errorOf } from '../api/http'
+import { useUserStore } from './user'
 
 export const useCreditsStore = defineStore('credits', {
   state: () => ({
-    balance: 2,
+    balance: 0,
     dailyGrant: 3,
     generateCost: 1,
     adReward: 1,
+    dailyClaimed: false,
     showEmptySheet: false,
     loading: false,
   }),
@@ -16,30 +16,27 @@ export const useCreditsStore = defineStore('credits', {
     canGenerate: (s) => s.balance >= s.generateCost,
   },
   actions: {
-    hydrate() {
-      try {
-        const raw = uni.getStorageSync(STORAGE_KEY)
-        if (raw !== '' && raw !== undefined && raw !== null) {
-          this.balance = Number(raw)
-        }
-      } catch {
-        /* ignore */
-      }
+    apply(data: {
+      balance: number
+      daily_grant?: number
+      generate_cost?: number
+      ad_reward?: number
+      daily_claimed_today?: boolean
+    }) {
+      this.balance = data.balance
+      if (data.daily_grant != null) this.dailyGrant = data.daily_grant
+      if (data.generate_cost != null) this.generateCost = data.generate_cost
+      if (data.ad_reward != null) this.adReward = data.ad_reward
+      if (data.daily_claimed_today != null) this.dailyClaimed = data.daily_claimed_today
     },
-    persist() {
-      uni.setStorageSync(STORAGE_KEY, this.balance)
-    },
-    async refreshFromApi() {
+    async refresh() {
+      const user = useUserStore()
+      if (!user.isLoggedIn) return
       this.loading = true
       try {
-        const data = await creditsApi.me()
-        this.balance = data.balance
-        this.dailyGrant = data.daily_grant
-        this.generateCost = data.generate_cost
-        this.adReward = data.ad_reward
-        this.persist()
-      } catch {
-        // 离线：保持本地余额
+        this.apply(await creditsApi.me())
+      } catch (e) {
+        if (errorOf(e).statusCode === 401) user.logout()
       } finally {
         this.loading = false
       }
@@ -50,63 +47,17 @@ export const useCreditsStore = defineStore('credits', {
     closeEmptySheet() {
       this.showEmptySheet = false
     },
-    /** 本地演示：日领 +3（无网时） */
-    claimDailyLocal() {
-      this.balance += this.dailyGrant
-      this.persist()
-    },
     async claimDaily() {
-      try {
-        const data = await creditsApi.dailyClaim()
-        this.balance = data.balance
-        this.persist()
-      } catch {
-        this.claimDailyLocal()
-      }
-    },
-    /** 本地演示：广告 +1 */
-    adRewardLocal() {
-      this.balance += this.adReward
-      this.persist()
-      this.closeEmptySheet()
+      const data = await creditsApi.dailyClaim()
+      this.balance = data.balance
+      this.dailyClaimed = true
+      return data
     },
     async claimAdReward() {
-      try {
-        const data = await creditsApi.adReward()
-        this.balance = data.balance
-        this.persist()
-        this.closeEmptySheet()
-      } catch {
-        this.adRewardLocal()
-      }
-    },
-    /** 尝试出稿扣分；不足则弹层 */
-    async tryGenerate(payload?: {
-      board_size?: string
-      color_count?: number
-    }): Promise<boolean> {
-      if (this.balance < this.generateCost) {
-        this.openEmptySheet()
-        return false
-      }
-      try {
-        const data = await draftsApi.generate(payload || { board_size: '52x52', color_count: 24 })
-        this.balance = data.balance
-        this.persist()
-        uni.showToast({ title: '出稿任务已提交', icon: 'success' })
-        return true
-      } catch (e: unknown) {
-        const err = e as { error?: string }
-        if (err?.error === 'insufficient_credits') {
-          this.openEmptySheet()
-          return false
-        }
-        // 离线本地扣
-        this.balance -= this.generateCost
-        this.persist()
-        uni.showToast({ title: '已扣 1 积分（离线）', icon: 'none' })
-        return true
-      }
+      const data = await creditsApi.adReward()
+      this.balance = data.balance
+      this.closeEmptySheet()
+      return data
     },
   },
 })

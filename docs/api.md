@@ -1,44 +1,67 @@
-# 拼豆 API 草图
+# 拼豆 API
 
 Base URL（本地）：`http://127.0.0.1:3000`
 
-统一错误体：
+统一错误：
 
 ```json
 { "error": "insufficient_credits", "message": "积分不足：需要 1，当前 0" }
 ```
 
+| HTTP | error | 场景 |
+|------|--------|------|
+| 400 | `bad_request` | 参数、图片无法解析、未选图 |
+| 401 | `unauthorized` | 未登录或 token 失效 |
+| 402 | `insufficient_credits` | 出稿时余额不足 |
+| 404 | `not_found` | 稿件 / 作品 / 订单不存在 |
+| 409 | `already_claimed` | 今日积分已领 |
+| 503 | `unavailable` | Redis 不可用，日领暂停 |
+
+除健康检查、充值档位、广场列表 / 详情 / 评论列表、静态文件外，写操作都要带 `Authorization: Bearer <JWT>`。
+
 ## 健康检查
 
-`GET /health` → `{ "status": "ok", "service": "pindou-api", "version": "..." }`
+`GET /health`
 
-## 认证
+```json
+{ "status": "ok", "service": "pindou-api", "version": "0.1.0" }
+```
+
+## 登录
 
 ### `POST /api/v1/auth/wx-login`
 
-请求：`{ "code": "微信 wx.login 拿到的 code" }`
-
-响应：
+```json
+{ "code": "wx.login 的 code，或开发态稳定 code" }
+```
 
 ```json
 {
-  "token": "<JWT>",
+  "token": "<JWT，7 天>",
+  "mode": "dev",
   "user": { "id": "uuid", "nickname": "拼豆玩家", "avatar_url": null }
 }
 ```
 
-说明：未配置 `WX_APPID` / `WX_SECRET` 时走开发 stub，任意非空 `code` 即可。
+- `WX_APPID` 与 `WX_SECRET` 都非空：请求微信 `jscode2session`，用返回的 openid。
+- 否则为开发态：`mock:` 前缀会原样进 openid；其他 code 做稳定哈希。同一 code 永远是同一用户。空 code 返回 400。
+
+### `GET /api/v1/me` · `PUT /api/v1/me`
+
+`PUT` 体：`{ "nickname": "豆豆手作" }`（1–20 字）。同样接受 `PATCH`，小程序用 `PUT`（`uni.request` 没有 PATCH）。
+
+返回用户、稿件 / 作品 / 收藏计数、积分快照、最近稿件和最近作品。
 
 ## 积分
 
-规则：
-
 | 动作 | 变动 |
 |------|------|
-| 每日领取 | +3 |
+| 每日领取 | +3，自然日（东八区）一次 |
 | 成功出稿 | −1 |
-| 激励广告 | +1 |
-| 充值档位 | 占位，见下 |
+| 激励广告 | +1，可多次 |
+| 示意充值 | 见档位 |
+
+日领用 Redis `SET key NX EX`（键 `pindou:daily:{user}:{日期}`，到期到次日）做幂等，数据库 `daily_claims` 再兜一层。Redis 失败返回 503，不会静默加两次。
 
 ### `GET /api/v1/credits/me`
 
@@ -54,53 +77,129 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 ### `POST /api/v1/credits/daily-claim`
 
-→ `{ "balance": 5, "delta": 3, "reason": "daily_claim" }`
+`{ "balance": 5, "delta": 3, "reason": "daily_claim" }`
 
 ### `POST /api/v1/credits/ad-reward`
 
-→ `{ "balance": 3, "delta": 1, "reason": "ad_reward" }`
+`{ "balance": 3, "delta": 1, "reason": "ad_reward" }`
 
-### 充值档位（占位，未实现支付）
+### `GET /api/v1/credits/ledger`
 
-| 档位 | 积分 | 示意价 |
-|------|------|--------|
-| 小包 | 10 | ¥6 |
-| 中包 | 30 | ¥15 |
-| 大包 | 68 | ¥30 |
+`{ "items": [{ "delta": 3, "reason": "daily_claim", "reason_label": "每日领取", "balance_after": 3, "created_at": "..." }] }`
+
+### `GET /api/v1/credits/packs`
+
+无需登录。档位对齐设计稿：
+
+| code | 积分 | 价格 |
+|------|------|------|
+| `small` | 10 | ¥6 |
+| `popular` | 35 | ¥18（推荐） |
+| `large` | 60 | ¥30 |
+
+### `POST /api/v1/credits/orders`
+
+`{ "pack_code": "small" }` → 订单 `status: "created"`，`mock: true`。
+
+### `POST /api/v1/credits/orders/{id}/mock-callback`
+
+开发态示意到账。重复调用不会重复加积分。正式支付上线前必须换成带签名校验的回调，这个接口不能暴露到生产。
+
+## 上传与文件
+
+### `POST /api/v1/uploads`
+
+`multipart/form-data`，字段名 `file`。只接受能解码的 JPG / PNG / GIF。
+
+```json
+{ "key": "uploads/<uuid>.jpg", "url": "http://127.0.0.1:3000/files/uploads/<uuid>.jpg", "etag": "...", "content_type": "image/jpeg" }
+```
+
+这是 COS PutObject 的字段形状。本地实现写到 `STORAGE_DIR`。
+
+### `GET /files/{key}`
+
+读取上面的对象。预览图键形如 `previews/<uuid>.png`。
 
 ## 出稿
 
 ### `POST /api/v1/drafts/generate`
 
-请求：
-
 ```json
 {
-  "image_ref": "可选，对象键或临时 URL",
-  "board_size": "52x52",
-  "color_count": 24
+  "image_ref": "uploads/....jpg 或 builtin:cat",
+  "image_base64": "可选，data URL 或纯 base64",
+  "board_size": 52,
+  "color_count": 12,
+  "palette_pref": "auto",
+  "title": "可选"
 }
 ```
+
+- `board_size` 也可以写 `"52x52"` / `"78×78"` / `"104x104"`。只接受 52、78、104。
+- `color_count` 默认 12，范围 4–24，表示色数上限；实际色数可能更少。
+- `palette_pref`：`auto` | `warm` | `macaron` | `contrast`。
+- `image_ref`：`builtin:cat|bear|chick|bunny` 用内置示例图。
+- 没图：400「请先选择图片」。坏图：400「无法解析图片，请上传 JPG 或 PNG」。过大：400「图片过大…」。
+- 先量化再扣分。图片失败不扣积分。余额不足 402。
 
 成功：
 
 ```json
 {
   "job_id": "uuid",
-  "status": "queued",
-  "balance": 1,
-  "message": "出稿任务已入队（stub）"
+  "draft_id": "uuid",
+  "status": "ready",
+  "balance": 2,
+  "message": "色号稿已生成（52×52，实际 9 色）",
+  "draft": { "id": "...", "palette": [], "preview_url": "...", "peg_count": 2704 }
 }
 ```
 
-积分不足：HTTP 402，`error: insufficient_credits`。
+算法：缩放到珠板尺寸后，映射到内置拼豆色板（含设计稿色号 A1 / B3 / C2 / D1 / K9 等），再把超出色数上限的小色块并进最近色。预览是一颗颗珠子的 PNG。
+
+## 稿件库
+
+### `GET /api/v1/drafts?tab=all|mine|favorite|template|official&q=`
+
+`{ "items": [DraftCard], "next_cursor": null }`，最多 60 条。
+
+### `GET /api/v1/drafts/{id}`
+
+含 `palette`、`cells_b64`（行优先调色板下标）、`hint`、`work_id`、`favorited`。
+
+### `POST /api/v1/drafts/{id}/favorite`
+
+切换收藏。`{ "favorited": true }`
+
+### `POST /api/v1/drafts/{id}/publish`
+
+```json
+{ "title": "可选", "caption": "可选", "category": "pet" }
+```
+
+`category`：`pet` 萌宠 / `food` 食物 / `pixel` 像素人 / `festival` 节日 / `simple` 简约。只能发布自己的稿。同一稿重复发布返回原作品。
 
 ## 广场
 
-### `GET /api/v1/plaza/feed`
+### `GET /api/v1/plaza/feed?tab=recommend|hot|pet|food|pixel|festival|simple&q=&cursor=&limit=`
 
-→ `{ "items": [], "next_cursor": null }`（stub）
+无需登录。`hot` 按点赞排序，其余按时间。`next_cursor` 可翻页。登录后 `liked` / `favorited` 会标出当前用户。
 
-## 存储
+### `GET /api/v1/plaza/works/{id}`
 
-COS / OSS 仅服务层接口占位（`services/storage.rs`），上传与 CDN URL 后续接入。
+### `POST /api/v1/plaza/works/{id}/like`
+
+`{ "liked": true, "like_count": 1 }`，再调一次取消。
+
+### `POST /api/v1/plaza/works/{id}/favorite`
+
+`{ "favorited": true, "favorite_count": 1 }`
+
+### `GET /api/v1/plaza/works/{id}/comments`
+
+### `POST /api/v1/plaza/works/{id}/comments`
+
+`{ "content": "1 到 200 字" }`
+
+启动时如果库里还没有官方模板，会写入「小橘猫吐舌 / 黄油小熊 / 柠檬汽水 / 蜜桃兔耳」和对应广场作品，方便直接浏览。
