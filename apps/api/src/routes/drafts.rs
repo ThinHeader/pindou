@@ -1,55 +1,133 @@
-//! 出稿：校验积分、扣 1、返回 job stub
+//! 出稿与稿件库
 
-use axum::{Json, Router, extract::State, routing::post};
-use serde::{Deserialize, Serialize};
+use axum::{
+    extract::{Path, Query, State},
+    routing::{get, post},
+    Json, Router,
+};
+use serde::Deserialize;
+use serde_json::json;
 use uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
-use crate::{AppState, services};
+use crate::error::AppResult;
+use crate::extract::AuthUser;
+use crate::services::{drafts, plaza};
+use crate::state::AppState;
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum FlexBoard {
+    Num(u32),
+    Label(String),
+}
 
 #[derive(Debug, Deserialize)]
 pub struct GenerateRequest {
-    /// 图片对象键或 data URL 占位
     pub image_ref: Option<String>,
-    /// 珠板尺寸，如 "52x52"
-    pub board_size: Option<String>,
-    /// 色数
+    pub image_base64: Option<String>,
+    /// 52 / 78 / 104，或 "52x52"
+    pub board_size: Option<FlexBoard>,
     pub color_count: Option<u32>,
+    pub palette_pref: Option<String>,
+    pub title: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct GenerateResponse {
-    pub job_id: String,
-    pub status: String,
-    pub balance: i32,
-    pub message: String,
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    pub tab: Option<String>,
+    pub q: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PublishRequest {
+    pub title: Option<String>,
+    pub caption: Option<String>,
+    pub category: Option<String>,
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/drafts/generate", post(generate))
+    Router::new()
+        .route("/drafts/generate", post(generate))
+        .route("/drafts", get(list))
+        .route("/drafts/{id}", get(detail))
+        .route("/drafts/{id}/favorite", post(favorite))
+        .route("/drafts/{id}/publish", post(publish))
 }
 
 async fn generate(
     State(state): State<AppState>,
+    auth: AuthUser,
     Json(body): Json<GenerateRequest>,
-) -> AppResult<Json<GenerateResponse>> {
-    let mut bal = state.demo_credits.lock().await;
-    match services::credits::try_spend_generate(*bal) {
-        Ok(next) => {
-            *bal = next;
-            let job_id = Uuid::new_v4().to_string();
-            let board = body.board_size.as_deref().unwrap_or("52x52");
-            let colors = body.color_count.unwrap_or(24);
-            let _image = body.image_ref.as_deref();
-            Ok(Json(GenerateResponse {
-                job_id,
-                status: "queued".into(),
-                balance: *bal,
-                message: format!(
-                    "出稿任务已入队（stub，{board} / {colors} 色，尚未接真实渲染）"
-                ),
-            }))
-        }
-        Err(msg) => Err(AppError::InsufficientCredits(msg)),
-    }
+) -> AppResult<Json<drafts::GenerateOutput>> {
+    let (board_size, board_label) = match body.board_size {
+        Some(FlexBoard::Num(n)) => (Some(n), None),
+        Some(FlexBoard::Label(label)) => (None, Some(label)),
+        None => (None, None),
+    };
+    let out = drafts::generate(
+        &state,
+        auth.user_id,
+        drafts::GenerateInput {
+            image_base64: body.image_base64,
+            image_ref: body.image_ref,
+            board_size,
+            board_label,
+            color_count: body.color_count,
+            palette_pref: body.palette_pref,
+            title: body.title,
+        },
+    )
+    .await?;
+    Ok(Json(out))
+}
+
+async fn list(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Query(q): Query<ListQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let items = drafts::list(
+        &state,
+        auth.user_id,
+        q.tab.as_deref().unwrap_or("all"),
+        q.q.as_deref().unwrap_or(""),
+    )
+    .await?;
+    Ok(Json(json!({ "items": items, "next_cursor": null })))
+}
+
+async fn detail(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<drafts::DraftDetail>> {
+    Ok(Json(drafts::get_detail(&state, auth.user_id, id).await?))
+}
+
+async fn favorite(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    let favorited = drafts::toggle_favorite(&state.db, auth.user_id, id).await?;
+    Ok(Json(json!({ "favorited": favorited })))
+}
+
+async fn publish(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PublishRequest>,
+) -> AppResult<Json<plaza::WorkCard>> {
+    Ok(Json(
+        plaza::publish(
+            &state,
+            auth.user_id,
+            id,
+            body.title,
+            body.caption,
+            body.category,
+        )
+        .await?,
+    ))
 }

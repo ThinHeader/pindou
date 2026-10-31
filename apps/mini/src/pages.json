@@ -6,7 +6,7 @@
     },
     {
       "path": "pages/plaza/index",
-      "style": { "navigationBarTitleText": "广场" }
+      "style": { "navigationBarTitleText": "拼豆广场" }
     },
     {
       "path": "pages/create/index",
@@ -22,7 +22,7 @@
     },
     {
       "path": "pages/create/params",
-      "style": { "navigationBarTitleText": "参数设置" }
+      "style": { "navigationBarTitleText": "出稿参数" }
     },
     {
       "path": "pages/create/preview",

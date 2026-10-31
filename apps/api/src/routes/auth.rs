@@ -1,32 +1,42 @@
-//! 微信登录（stub：无真实 code2session）
+//! 微信登录。未配置 AppId 时，任意非空 code 走开发态（同一 code 同一用户）。
 
-use axum::{Json, Router, extract::State, routing::post};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use axum::{extract::State, routing::post, Json, Router};
+use serde::Deserialize;
 
 use crate::error::{AppError, AppResult};
-use crate::{AppState, services};
+use crate::services::{self, auth};
+use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct WxLoginRequest {
     pub code: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct UserDto {
     pub id: String,
     pub nickname: String,
     pub avatar_url: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct WxLoginResponse {
     pub token: String,
     pub user: UserDto,
+    /// dev：未配置微信，按 code 稳定映射；wechat：已走 code2session
+    pub mode: String,
 }
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/auth/wx-login", post(wx_login))
+}
+
+pub fn user_dto(user: &auth::UserRecord) -> UserDto {
+    UserDto {
+        id: user.id.to_string(),
+        nickname: user.nickname.clone(),
+        avatar_url: user.avatar_url.clone(),
+    }
 }
 
 async fn wx_login(
@@ -34,19 +44,18 @@ async fn wx_login(
     Json(body): Json<WxLoginRequest>,
 ) -> AppResult<Json<WxLoginResponse>> {
     if body.code.trim().is_empty() {
-        return Err(AppError::BadRequest("code is required".into()));
+        return Err(AppError::BadRequest("code 不能为空".into()));
     }
-
-    // 占位：未配置 WX_APPID 时返回演示用户 + 本地 JWT stub
-    let user_id = Uuid::new_v4().to_string();
-    let token = services::auth::issue_dev_token(&state.config.jwt_secret, &user_id)?;
-
+    let mode = if state.config.wechat_configured() {
+        "wechat"
+    } else {
+        "dev"
+    };
+    let user = services::auth::login_with_code(&state.config, &state.db, &body.code).await?;
+    let token = services::auth::issue_token(&state.config.jwt_secret, user.id)?;
     Ok(Json(WxLoginResponse {
         token,
-        user: UserDto {
-            id: user_id,
-            nickname: "拼豆玩家".into(),
-            avatar_url: None,
-        },
+        user: user_dto(&user),
+        mode: mode.into(),
     }))
 }

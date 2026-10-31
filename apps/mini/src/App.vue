@@ -4,10 +4,10 @@ import { useCreditsStore } from './stores/credits'
 import { useUserStore } from './stores/user'
 
 onLaunch(() => {
-  const credits = useCreditsStore()
   const user = useUserStore()
+  const credits = useCreditsStore()
   user.hydrate()
-  credits.hydrate()
+  if (user.isLoggedIn) credits.refresh()
 })
 </script>
 
@@ -20,5 +20,26 @@ page {
   font-family: $font;
   font-size: 28rpx;
   line-height: 1.45;
+}
+
+.sec-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 30rpx;
+  font-weight: 700;
+  color: $ink;
+  margin: 28rpx 0 16rpx;
+}
+.sec-link { color: $brand; font-size: 24rpx; font-weight: 600; }
+.muted { color: $ink-3; font-size: 24rpx; }
+.empty {
+  background: $card;
+  border: 1rpx dashed $line;
+  border-radius: 24rpx;
+  padding: 36rpx 28rpx;
+  color: $ink-3;
+  text-align: center;
+  font-size: 26rpx;
 }
 </style>

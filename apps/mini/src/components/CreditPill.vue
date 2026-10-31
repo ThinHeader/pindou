@@ -28,8 +28,5 @@ function goCredits() {
   font-size: 24rpx;
   font-weight: 600;
 }
-.dot {
-  color: $brand;
-  font-size: 18rpx;
-}
+.dot { color: $brand; font-size: 18rpx; }
 </style>

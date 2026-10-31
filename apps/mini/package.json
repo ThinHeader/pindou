@@ -2,7 +2,7 @@
   "name": "pindou-mini",
   "version": "0.1.0",
   "private": true,
-  "description": "拼豆 · uni-app Vue3 + TS 小程序骨架",
+  "description": "拼豆 · uni-app Vue3 + TS 小程序",
   "scripts": {
     "dev:h5": "uni",
     "build:h5": "uni build",
@@ -11,19 +11,23 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
-    "pinia": "^2.2.6",
-    "vue": "^3.4.21"
+    "@dcloudio/uni-app": "3.0.0-alpha-5030320261021002",
+    "@dcloudio/uni-components": "3.0.0-alpha-5030320261021002",
+    "@dcloudio/uni-h5": "3.0.0-alpha-5030320261021002",
+    "@dcloudio/uni-mp-weixin": "3.0.0-alpha-5030320261021002",
+    "pinia": "2.3.1",
+    "vue": "3.4.21"
   },
   "devDependencies": {
     "@dcloudio/types": "^3.4.8",
-    "@dcloudio/vite-plugin-uni": "^3.0.0-alpha-4020420240930001",
+    "@dcloudio/vite-plugin-uni": "3.0.0-alpha-5030320261021002",
+    "sass-embedded": "^1.107.1",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10",
+    "vite": "5.4.21",
     "vue-tsc": "^2.1.10"
   },
-  "optionalDependencies": {},
   "comments": {
     "ui": "可选 UI：wot-design-uni（安装后在 main.ts 引入）",
-    "note": "当前为手写最小结构；用 HBuilderX 打开本目录，或 npm i 后接 @dcloudio/vite-plugin-uni"
+    "note": "HBuilderX 打开本目录，或 npm i 后 npm run dev:mp-weixin / dev:h5"
   }
 }
