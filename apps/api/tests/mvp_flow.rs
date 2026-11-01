@@ -62,6 +62,8 @@ async fn app() -> axum::Router {
     let mut config = pindou_api::Config::from_env();
     // 集成测试不访问阿里云，即使本机配了密钥也走模拟管线。
     config.pipeline_provider = "mock".into();
+    // 即使本机 .env 配了商户参数，这条链路也只测开发示意充值。
+    config.force_mock_pay();
     let state = pindou_api::connect(&config)
         .await
         .expect("连接 PostgreSQL 失败，请先启动 docker compose");
@@ -374,7 +376,23 @@ async fn mvp_auth_credits_generate_plaza() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{order}");
+    assert_eq!(order["mock"], true);
+    assert!(order.get("pay_params").is_none());
+    assert_eq!(order["status"], "created");
     let order_id = order["order_id"].as_str().unwrap();
+    let (status, pending) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/credits/orders/{order_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pending}");
+    assert_eq!(pending["status"], "created");
+    let (status, before_pay) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "{before_pay}");
+    assert_eq!(before_pay["balance"], 3, "未支付不能加积分");
     let (status, paid) = call(
         &app,
         "POST",
