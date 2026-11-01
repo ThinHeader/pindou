@@ -24,7 +24,7 @@ docs/api.md                 # 接口说明
 | 每日领取 | +3（东八区每天一次，PostgreSQL `daily_claims` 幂等） |
 | 成功出稿 | −1（整条 MVP+：去背 + 卡通 + 拼豆，只扣一次；失败或取消不扣，也不退款） |
 | 激励广告 | +1 |
-| 充值 | 10 / ¥6，35 / ¥18，60 / ¥30（示意下单 + mock 回调） |
+| 充值 | 10 / ¥6，35 / ¥18，60 / ¥30。未配商户参数时开发示意到账；配齐后走微信支付 JSAPI，验签成功才入账一次 |
 
 ## 1. 起数据库
 
@@ -59,7 +59,29 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/wx-login \
 
 把返回的 `token` 放到后面的 `Authorization: Bearer`。
 
-微信真登录：在 `.env` 填 `WX_APPID` 和 `WX_SECRET`。留空则走开发态，同一 `code` 对应同一用户，不会请求微信。
+微信真登录：在 `.env` 填 `WX_APPID` 和 `WX_SECRET`。留空则走开发态，同一 `code` 对应同一用户，不会请求微信。支付要用这个登录拿到的 `openid`，所以 AppID 必须和小程序、商户号是一套。
+
+## 微信支付（积分充值）
+
+档位仍是小包 10 积分 / ¥6、推荐 35 / ¥18、大包 60 / ¥30。积分只加在原有 `credit_accounts` 上，没有第二套钱包。
+
+**开发示意（默认）**：`WECHAT_MCH_ID`、私钥、证书序列号、APIv3 密钥、回调地址、微信支付公钥这些商户参数全部留空。`GET /api/v1/credits/packs` 的 `pay_mode` 为 `mock`。小程序会写明「开发示意充值」，确认后调用 `POST /api/v1/credits/orders/{id}/mock-callback`，同一订单只加一次积分，不会请求微信。
+
+**正式支付**：上述参数配齐后，下单调用微信 API v3 `POST /v3/pay/transactions/jsapi`，把 `timeStamp` / `nonceStr` / `package` / `signType=RSA` / `paySign` 交给小程序 `uni.requestPayment`。用户取消或失败不加积分。微信把支付结果 POST 到 `WECHAT_PAY_NOTIFY_URL`（默认 `{PUBLIC_BASE_URL}/api/v1/pay/wechat/notify`）。服务校验平台签名、用 APIv3 密钥解密，核对金额、商户号、AppID 和付款人 `openid`，在同一事务里把订单从 `created` 改成 `paid` 并写一条 `recharge` 流水。`credit_orders.transaction_id` 和 `credit_ledger (reason, ref_id)` 有唯一约束，重复通知不会再加积分。客户端支付成功后会轮询 `GET /api/v1/credits/orders/{id}`；若回调稍慢，连的是官方微信域名时还会向微信查单并补入账。
+
+只要填写了任意一项商户参数，示意回调就会拒绝，避免生产环境被假支付刷积分。参数不完整时下单返回 503，同样不加积分。
+
+商户平台：
+
+1. 小程序完成微信认证。登录用的 `WX_APPID` 和支付 AppID 是同一个。
+2. 注册微信支付商户号，开通 **JSAPI 支付**。小程序支付走 JSAPI 下单，再由 `wx.requestPayment` 拉起。
+3. **关联小程序**：商户平台 → 产品中心 → AppID 账号管理 → 关联小程序 AppID。
+4. **JSAPI 支付授权目录**：这是公众号 / H5 网页支付要填的目录。小程序支付不使用 H5 授权目录，也不要填小程序页面路径。确认 JSAPI 产品已开通、AppID 已关联即可。如果开通页把授权目录标成必填，按商户平台当时的说明填写，它只对 H5 生效。
+5. 账户中心 → API 安全：申请商户 API 证书（`apiclient_key.pem` + 证书序列号），设置 32 位 APIv3 密钥。推荐再申请「微信支付公钥」，把公钥 PEM 和公钥 ID 配进环境变量。不配公钥时，服务会请求 `/v3/certificates`，用 APIv3 密钥解密平台证书并缓存。
+6. **支付回调 URL**：`https://你的域名/api/v1/pay/wechat/notify`。APIv3 把地址放在下单参数 `notify_url` 里，一般不用在商户平台另备案。必须是公网 HTTPS、不能带 query，微信服务器要能访问。`PUBLIC_BASE_URL` 指到这个域名，或单独设置 `WECHAT_PAY_NOTIFY_URL`。本地 http 不行，需要内网穿透。
+7. 小程序后台把 API 域名加进 request 合法域名。`requestPayment` 由微信客户端发起，不走业务 request 域名。
+
+变量说明见 `apps/api/.env.example`。不要提交私钥和 APIv3 密钥。
 
 MVP+ 出稿默认「智能去背 → 人物动漫化 → 自研最近邻拼豆」。阿里云密钥见下方。没配密钥时走开发模拟，仍然会产出透明底、卡通中间图和真实色号稿，方便本地和 CI。
 
@@ -92,7 +114,7 @@ cd apps/api
 cargo test
 ```
 
-覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、MVP+ 模拟管线（去背 / 卡通 / 最近邻色号，成功才扣 1 分）、改名删除、广场点赞评论、示意充值回调、余额不足 402。集成测试强制 `PIPELINE_PROVIDER=mock`。
+覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、MVP+ 模拟管线（去背 / 卡通 / 最近邻色号，成功才扣 1 分）、改名删除、广场点赞评论、开发示意充值只入账一次、微信支付验签回调幂等、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数，避免测试打到真微信。支付用例使用本机假微信和测试密钥。
 
 ## 4. 小程序
 

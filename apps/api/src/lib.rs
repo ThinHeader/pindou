@@ -21,6 +21,8 @@ use tower_http::trace::TraceLayer;
 
 pub use config::Config;
 pub use services::credits::china_today;
+#[doc(hidden)]
+pub use services::wechat_pay::seal_aead_for_tests;
 pub use state::AppState;
 
 /// 连接依赖、迁移、种子数据。
@@ -51,7 +53,9 @@ pub async fn connect(config: &Config) -> anyhow::Result<AppState> {
         config: Arc::new(config.clone()),
         db: pool,
         storage,
+        pay_certs: services::wechat_pay::PlatformCertStore::default(),
     };
+    tracing::info!("{}", services::wechat_pay::describe_pay_mode(config));
 
     services::seed::seed_if_empty(&state)
         .await

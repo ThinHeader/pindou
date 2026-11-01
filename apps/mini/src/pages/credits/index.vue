@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
-import { creditsApi } from '../../api/http'
-import type { CreditPack, LedgerItem } from '../../api/types'
+import { creditsApi, requestWxPayment } from '../../api/http'
+import type { CreditOrder, CreditPack, LedgerItem } from '../../api/types'
 import { useCreditsStore } from '../../stores/credits'
 import { useUserStore } from '../../stores/user'
 import { ensureLogin, showError, showTip, timeAgo } from '../../utils/ui'
@@ -15,14 +15,19 @@ const paying = ref(false)
 
 const fallback: CreditPack[] = [
   { code: 'small', name: '小包', credits: 10, price_cents: 600, price_label: '¥6', blurb: '约 0.6 元/次出稿', popular: false },
-  { code: 'popular', name: '推荐', credits: 35, price_cents: 1800, price_label: '¥18', blurb: '多送 5 · 示意', popular: true },
-  { code: 'large', name: '大包', credits: 60, price_cents: 3000, price_label: '¥30', blurb: '多送 10 · 示意', popular: false },
+  { code: 'popular', name: '推荐', credits: 35, price_cents: 1800, price_label: '¥18', blurb: '多送 5', popular: true },
+  { code: 'large', name: '大包', credits: 60, price_cents: 3000, price_label: '¥30', blurb: '多送 10', popular: false },
 ]
+
+const payMode = ref<'mock' | 'wechat' | 'misconfigured' | 'unknown'>('unknown')
 
 async function load() {
   try {
     const data = await creditsApi.packs()
     packs.value = data.items
+    if (data.pay_mode === 'mock' || data.pay_mode === 'wechat' || data.pay_mode === 'misconfigured') {
+      payMode.value = data.pay_mode
+    }
   } catch {
     packs.value = fallback
   }
@@ -49,27 +54,103 @@ async function watchAd() {
   }
 }
 
-function buy(pack: CreditPack) {
-  if (!ensureLogin() || paying.value) return
-  uni.showModal({
-    title: `${pack.price_label} · ${pack.credits} 积分`,
-    content: '这是示意充值，确认后会直接到账，不会产生真实扣款。',
-    success: async (res) => {
-      if (!res.confirm) return
-      paying.value = true
-      try {
-        const order = await creditsApi.createOrder(pack.code)
-        const paid = await creditsApi.mockPay(order.order_id)
-        credits.balance = paid.balance
-        showTip(paid.delta > 0 ? `到账 ${paid.delta} 积分` : '订单已支付')
-        await load()
-      } catch (e) {
-        showError(e, '下单失败')
-      } finally {
-        paying.value = false
-      }
-    },
+function askPay(title: string, content: string, confirmText: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    uni.showModal({
+      title,
+      content,
+      confirmText,
+      cancelText: '取消',
+      confirmColor: '#FF6B5B',
+      success: (res) => resolve(Boolean(res.confirm)),
+      fail: () => resolve(false),
+    })
   })
+}
+
+function tell(content: string) {
+  if (content.length > 14) {
+    uni.showModal({ title: '支付', content, showCancel: false })
+    return
+  }
+  showTip(content)
+}
+
+function payErrText(e: unknown): string {
+  if (typeof e === 'string') return e
+  if (e && typeof e === 'object' && 'errMsg' in e) {
+    const msg = (e as { errMsg?: unknown }).errMsg
+    return typeof msg === 'string' ? msg : ''
+  }
+  return ''
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function pollOrder(orderId: string): Promise<CreditOrder> {
+  let last = await creditsApi.getOrder(orderId)
+  for (let i = 0; i < 4 && last.status !== 'paid'; i += 1) {
+    await sleep(800)
+    last = await creditsApi.getOrder(orderId)
+  }
+  return last
+}
+
+async function buy(pack: CreditPack) {
+  if (!ensureLogin() || paying.value) return
+  if (payMode.value === 'misconfigured') {
+    tell('支付暂不可用')
+    return
+  }
+  paying.value = true
+  try {
+    const order = await creditsApi.createOrder(pack.code)
+    if (order.mock) {
+      const ok = await askPay(
+        '开发示意充值',
+        `${pack.price_label} · ${pack.credits} 积分\n当前未配置微信支付，确认后直接到账，不会产生真实扣款。`,
+        '确认到账',
+      )
+      if (!ok) return
+      const paid = await creditsApi.mockPay(order.order_id)
+      credits.balance = paid.balance
+      tell(paid.delta > 0 ? `到账 ${paid.delta} 积分` : '订单已支付')
+      await load()
+      return
+    }
+
+    if (!order.pay_params) {
+      tell('支付参数缺失，请稍后重试')
+      return
+    }
+    const ok = await askPay(
+      '微信支付',
+      `支付 ${pack.price_label}，到账 ${pack.credits} 积分。取消或失败不会加积分。`,
+      '去支付',
+    )
+    if (!ok) return
+    try {
+      await requestWxPayment(order.pay_params)
+    } catch (e) {
+      const msg = payErrText(e).toLowerCase()
+      tell(msg.includes('cancel') || msg.includes('取消') ? '已取消支付' : '支付未完成，积分不会到账')
+      return
+    }
+    const result = await pollOrder(order.order_id)
+    if (result.balance != null) credits.balance = result.balance
+    if (result.status === 'paid') {
+      tell('支付成功，积分已到账')
+    } else {
+      tell('支付已提交，到账可能稍有延迟，请稍后下拉刷新')
+    }
+    await load()
+  } catch (e) {
+    showError(e, '下单失败')
+  } finally {
+    paying.value = false
+  }
 }
 </script>
 
@@ -97,7 +178,11 @@ function buy(pack: CreditPack) {
       <text class="badge">+{{ credits.adReward }}</text>
     </view>
 
-    <view class="sec-title"><text>充值档位</text><text class="tag">示意</text></view>
+    <view class="sec-title">
+      <text>充值档位</text>
+      <text v-if="payMode === 'misconfigured'" class="tag">暂不可用</text>
+      <text v-else-if="payMode === 'mock'" class="tag">开发示意</text>
+    </view>
     <view class="tiers">
       <view
         v-for="pack in packs"
@@ -112,7 +197,9 @@ function buy(pack: CreditPack) {
         <text class="blurb">{{ pack.blurb }}</text>
       </view>
     </view>
-    <text class="legal">积分仅用于出稿，不退不提现。充值示意，非正式支付。</text>
+    <text v-if="payMode === 'mock'" class="legal">积分仅用于出稿，不退不提现。当前是开发示意充值，不会产生真实扣款。</text>
+    <text v-else-if="payMode === 'misconfigured'" class="legal">微信支付配置不完整，暂不能充值。</text>
+    <text v-else class="legal">积分仅用于出稿，不退不提现。支付由微信支付完成，成功后到账。</text>
 
     <view class="sec-title"><text>积分明细</text></view>
     <view v-if="!user.isLoggedIn" class="empty">登录后查看明细</view>

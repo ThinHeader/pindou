@@ -59,7 +59,7 @@ Base URL（本地）：`http://127.0.0.1:3000`
 | 每日领取 | +3，自然日（东八区）一次 |
 | 成功出稿 | −1 |
 | 激励广告 | +1，可多次 |
-| 示意充值 | 见档位 |
+| 充值 | 见档位。开发示意或微信支付，都只入账一次 |
 
 日领在同一事务里向 `daily_claims` 插入 `(user_id, 东八区今日日期)`；主键冲突则返回 409 `already_claimed`，成功则给账户 +3 并写入 `credit_ledger`。不依赖 Redis。
 
@@ -89,21 +89,67 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 ### `GET /api/v1/credits/packs`
 
-无需登录。档位对齐设计稿：
+无需登录。档位：
 
 | code | 积分 | 价格 |
 |------|------|------|
-| `small` | 10 | ¥6 |
+| `small` | 10 | ¥6（600 分） |
 | `popular` | 35 | ¥18（推荐） |
 | `large` | 60 | ¥30 |
 
+响应里的 `pay_mode`：
+
+| 值 | 含义 |
+|----|------|
+| `mock` | 未配置任何微信支付商户参数。可以走示意回调 |
+| `wechat` | 已启用 JSAPI。下单返回调起支付参数 |
+| `misconfigured` | 写了部分商户参数。示意到账关闭，下单 503 |
+
 ### `POST /api/v1/credits/orders`
 
-`{ "pack_code": "small" }` → 订单 `status: "created"`，`mock: true`。
+`{ "pack_code": "small" }`。只创建 `status: "created"` 的订单，**不加积分**。
+
+开发示意时 `mock: true`，没有 `pay_params`。
+
+微信支付时 `mock: false`，并带上小程序 `wx.requestPayment` 参数：
+
+```json
+{
+  "order_id": "uuid",
+  "out_trade_no": "32 位商户单号",
+  "amount_fen": 600,
+  "status": "created",
+  "mock": false,
+  "pay_params": {
+    "timeStamp": "1710000000",
+    "nonceStr": "...",
+    "package": "prepay_id=wx...",
+    "signType": "RSA",
+    "paySign": "..."
+  }
+}
+```
+
+`paySign` 是商户私钥对 `appId\n时间戳\n随机串\nprepay_id=...\n` 的 SHA256withRSA。付款人 `openid` 来自登录用户，不由客户端上传。
+
+### `GET /api/v1/credits/orders/{id}`
+
+订单所属用户查询状态。`paid` 之前不加积分。正式支付且 API 指向 `api.mch.weixin.qq.com` 时，若本地仍是 `created`，会向微信查单；查单响应验签通过且交易成功才补入账。响应带当前 `balance`，方便支付后轮询。
 
 ### `POST /api/v1/credits/orders/{id}/mock-callback`
 
-开发态示意到账。重复调用不会重复加积分。正式支付上线前必须换成带签名校验的回调，这个接口不能暴露到生产。
+仅 `pay_mode=mock` 且订单渠道是 `mock` 时入账。重复调用 `delta` 为 0。配置了任一商户参数后返回 403，不加积分。
+
+### `POST /api/v1/pay/wechat/notify`
+
+微信支付结果通知，无登录态。用 `Wechatpay-Timestamp` / `Nonce` / `Signature` / `Serial` 验签（5 分钟时间窗），再用 APIv3 密钥做 AES-256-GCM 解密。
+
+- 签名无效：401，不加积分。
+- 金额、AppID、商户号或 `openid` 与订单不一致：4xx/5xx，不加积分，订单保持 `created`。
+- `TRANSACTION.SUCCESS` 且核对通过：同一事务把订单标为 `paid` 并写 `recharge` 流水。
+- 同一 `transaction_id` 或同一订单的重复通知：200，不再加积分。
+
+成功响应 `{"code":"SUCCESS","message":"成功"}`。
 
 ## 上传与文件
 

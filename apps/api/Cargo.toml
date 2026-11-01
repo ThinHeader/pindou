@@ -26,6 +26,9 @@ sha1 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 base64 = "0.22"
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+aes-gcm = "0.10"
+x509-parser = "0.16"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
@@ -34,4 +37,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 uuid = { version = "1", features = ["v4"] }
 serde_json = "1"
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+axum = { version = "0.8", features = ["macros"] }
 

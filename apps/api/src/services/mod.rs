@@ -9,3 +9,4 @@ pub mod plaza;
 pub mod seed;
 pub mod storage;
 pub mod vision;
+pub mod wechat_pay;

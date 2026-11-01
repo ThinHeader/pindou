@@ -3,6 +3,7 @@ import type {
   CommentItem,
   CreditOrder,
   CreditPack,
+  WxPayParams,
   CreditsMe,
   CreditsMutation,
   DraftCard,
@@ -111,13 +112,31 @@ export const creditsApi = {
   dailyClaim: () => http.post<CreditsMutation>('/api/v1/credits/daily-claim'),
   adReward: () => http.post<CreditsMutation>('/api/v1/credits/ad-reward'),
   ledger: () => http.get<{ items: LedgerItem[] }>('/api/v1/credits/ledger'),
-  packs: () => http.get<{ items: CreditPack[]; mock: boolean; note: string }>('/api/v1/credits/packs'),
+  packs: () =>
+    http.get<{ items: CreditPack[]; mock: boolean; pay_mode: string; note: string }>('/api/v1/credits/packs'),
   createOrder: (packCode: string) =>
     http.post<CreditOrder>('/api/v1/credits/orders', { pack_code: packCode }),
+  getOrder: (orderId: string) => http.get<CreditOrder>(`/api/v1/credits/orders/${orderId}`),
   mockPay: (orderId: string) =>
     http.post<{ order: CreditOrder; balance: number; delta: number }>(
       `/api/v1/credits/orders/${orderId}/mock-callback`,
     ),
+}
+
+export function requestWxPayment(params: WxPayParams): Promise<void> {
+  return new Promise((resolve, reject) => {
+    uni.requestPayment({
+      provider: 'wxpay',
+      orderInfo: params.package,
+      timeStamp: params.timeStamp,
+      nonceStr: params.nonceStr,
+      package: params.package,
+      signType: params.signType,
+      paySign: params.paySign,
+      success: () => resolve(),
+      fail: (err) => reject(err),
+    })
+  })
 }
 
 export const draftsApi = {

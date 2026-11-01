@@ -40,14 +40,26 @@ export interface CreditPack {
   popular: boolean
 }
 
+export interface WxPayParams {
+  timeStamp: string
+  nonceStr: string
+  package: string
+  signType: string
+  paySign: string
+}
+
 export interface CreditOrder {
   order_id: string
+  out_trade_no?: string
   pack_code: string
   credits: number
   price_cents: number
+  amount_fen?: number
   price_label: string
   status: string
   mock: boolean
+  pay_params?: WxPayParams | null
+  balance?: number
 }
 
 export interface LedgerItem {
