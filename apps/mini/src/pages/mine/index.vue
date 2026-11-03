@@ -67,7 +67,7 @@ async function claim() {
       <view class="info">
         <text class="name">{{ user.isLoggedIn ? user.nickname : '点击登录' }}</text>
         <text v-if="!user.isLoggedIn" class="sub">微信一键登录</text>
-        <text v-else class="sub">头像和昵称仅在本页展示 · <text class="link" @click.stop="goLogin">{{ user.hasProfile ? '修改' : '去登录页设置' }}</text></text>
+        <text v-else class="sub">头像和昵称仅在本页展示 · <text class="link" @click.stop="goLogin">{{ user.hasProfile ? '修改' : '微信登录' }}</text></text>
       </view>
     </view>
 
