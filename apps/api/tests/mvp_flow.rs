@@ -1066,6 +1066,14 @@ async fn profile_avatar_and_nickname_roundtrip() {
         .to_string();
     assert!(avatar.contains("/files/uploads/"), "{avatar}");
     assert!(avatar.starts_with("http"), "{avatar}");
+    let key = avatar.split("/files/").nth(1).expect("object key");
+    assert!(key.starts_with("uploads/"), "{key}");
+    let (status, bytes) = get_bytes(&app, &format!("/files/{key}")).await;
+    assert_eq!(status, StatusCode::OK, "{avatar}");
+    assert!(bytes.starts_with(b"\x89PNG"));
+    let bare = key.trim_start_matches("uploads/");
+    let (status, _) = get_bytes(&app, &format!("/files/{bare}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "裸文件名不是对象键");
 
     let (status, me) = call(&app, "GET", "/api/v1/me", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{me}");

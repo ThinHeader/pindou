@@ -95,7 +95,7 @@ MVP+ 出稿默认「上传 → 火山方舟 Seedream 5.0 Flash 图生图 → 自
 | `ARK_BASE_URL` | 可选，默认 `https://ark.cn-beijing.volces.com` |
 | `ARK_MODEL` | 可选，默认 `doubao-seedream-5-0-flash-260915`（Seedream 5.0 Flash） |
 | `PIPELINE_PROVIDER` | `auto`（有方舟密钥用 Seedream，否则模拟）/ `mock` / `seedream` / `ark` |
-| `PUBLIC_BASE_URL` | 原图的公网地址。方舟能访问时用这个 URL；本机 `127.0.0.1` 会改成随请求附带的 base64 |
+| `PUBLIC_BASE_URL` | 预览图、头像等对象的公网地址。Seedream 参考图不使用这个 URL，请求里内联 data URL |
 
 这是方舟 OpenAPI `POST /api/v3/images/generations`（图生图），不是阿里云视觉智能，也不是 SeedEdit VIAPI。`ALIYUN_ACCESS_KEY_ID` / `ALIYUN_ACCESS_KEY_SECRET` 不能用于这条管线。`PIPELINE_PROVIDER=aliyun` 会直接 400。
 
