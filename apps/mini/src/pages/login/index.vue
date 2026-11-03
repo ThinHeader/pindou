@@ -116,25 +116,34 @@ function showLegal() {
     <view class="btn ghost" @click="browse">先看教程</view>
     <text class="legal" @click="showLegal">点击微信登录时授权获取头像和昵称，仅在「我的」展示。登录即表示同意《用户协议》与《隐私政策》</text>
 
-    <view v-if="sheet" class="mask">
+    <view v-if="sheet" class="mask" @touchmove.stop.prevent>
       <form class="sheet" @submit="allow">
-        <text class="sheet-title">授权头像昵称</text>
+        <text class="sheet-title">获取你的昵称、头像</text>
         <text class="sheet-desc">用于在「我的」展示当前账号</text>
         <button class="avatar-btn" open-type="chooseAvatar" hover-class="none" @chooseavatar="onChooseAvatar" @click="onAvatarTap">
           <image v-if="avatarPreview" class="avatar-img" :src="avatarPreview" mode="aspectFill" />
-          <text v-else class="avatar-ph">头像</text>
+          <view v-else class="avatar-cue">
+            <view class="cam">
+              <view class="cam-bump"></view>
+              <view class="cam-lens"></view>
+            </view>
+          </view>
         </button>
-        <input
-          class="nick"
-          type="nickname"
-          name="nickname"
-          placeholder="点击填写微信昵称"
-          maxlength="20"
-          @input="onNickname"
-          @blur="onNickname"
-        />
+        <view class="nick-row">
+          <text class="nick-label">昵称</text>
+          <input
+            class="nick"
+            type="nickname"
+            name="nickname"
+            placeholder="点击填写昵称"
+            placeholder-style="color:#8A847F"
+            maxlength="20"
+            @input="onNickname"
+            @blur="onNickname"
+          />
+        </view>
         <button class="btn primary sheet-ok" form-type="submit" hover-class="none" :disabled="submitting">允许</button>
-        <text class="deny" @click="decline">拒绝</text>
+        <text class="deny" @click="decline">暂不授权</text>
       </form>
     </view>
   </view>
@@ -172,23 +181,59 @@ function showLegal() {
   display: flex; align-items: flex-end; z-index: 20;
 }
 .sheet {
-  width: 100%; background: #fff; border-radius: 32rpx 32rpx 0 0;
-  padding: 36rpx 40rpx 48rpx; display: flex; flex-direction: column; align-items: center;
+  width: 100%; box-sizing: border-box; background: #fff;
+  border-radius: 48rpx 48rpx 0 0;
+  padding: 48rpx 40rpx calc(24rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(24rpx + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; align-items: center;
 }
 .sheet-title, .sheet-desc { display: block; width: 100%; text-align: center; }
-.sheet-title { font-size: 34rpx; font-weight: 800; }
-.sheet-desc { margin-top: 8rpx; color: $ink-3; font-size: 24rpx; }
+.sheet-title { font-size: 34rpx; font-weight: 650; color: $ink; line-height: 1.4; }
+.sheet-desc { margin-top: 12rpx; color: $ink-3; font-size: 26rpx; line-height: 1.5; }
 .avatar-btn {
-  width: 144rpx; height: 144rpx; min-height: 144rpx; padding: 0; margin: 28rpx 0 0;
-  border-radius: 40rpx; overflow: hidden; background: $brand-lighter; line-height: 144rpx;
+  position: relative;
+  width: 160rpx; height: 160rpx; min-width: 160rpx; min-height: 160rpx; max-width: 160rpx;
+  padding: 0; margin: 48rpx 0 0;
+  border-radius: 50%; overflow: hidden; background: $brand-soft; line-height: 0;
 }
 .avatar-btn::after { border: none; }
-.avatar-ph { color: $brand-dark; font-size: 28rpx; font-weight: 700; }
-.avatar-img { width: 144rpx; height: 144rpx; display: block; }
-.nick {
-  width: 100%; height: 88rpx; margin-top: 24rpx; padding: 0 24rpx;
-  background: $bg; border-radius: 20rpx; font-size: 30rpx; text-align: center;
+.avatar-img { width: 160rpx; height: 160rpx; border-radius: 50%; display: block; }
+.avatar-cue {
+  width: 160rpx; height: 160rpx;
+  display: flex; align-items: center; justify-content: center;
 }
-.sheet-ok { margin-top: 28rpx; }
-.deny { color: $ink-3; font-size: 26rpx; padding: 8rpx 16rpx; }
+.cam {
+  position: relative;
+  width: 56rpx; height: 42rpx; box-sizing: border-box;
+  border: 4rpx solid $brand-dark; border-radius: 10rpx;
+}
+.cam-bump {
+  position: absolute; top: -12rpx; left: 16rpx;
+  width: 20rpx; height: 10rpx; box-sizing: border-box;
+  border: 4rpx solid $brand-dark; border-bottom: none; border-radius: 6rpx 6rpx 0 0;
+}
+.cam-lens {
+  position: absolute; left: 50%; top: 50%;
+  width: 16rpx; height: 16rpx; margin-left: -8rpx; margin-top: -8rpx; box-sizing: border-box;
+  border: 4rpx solid $brand-dark; border-radius: 50%;
+}
+.nick-row {
+  width: 100%; min-height: 108rpx; margin-top: 40rpx;
+  display: flex; flex-direction: row; align-items: center;
+  border-top: 1rpx solid $line; border-bottom: 1rpx solid $line;
+}
+.nick-label { flex-shrink: 0; width: 112rpx; font-size: 30rpx; color: $ink; }
+.nick {
+  flex: 1; min-width: 0; height: 108rpx; padding: 0;
+  font-size: 30rpx; text-align: right; color: $ink; background: transparent;
+}
+.sheet-ok {
+  margin-top: 48rpx; margin-bottom: 8rpx; padding: 0;
+  height: 96rpx; line-height: 96rpx; font-size: 32rpx;
+}
+.deny {
+  display: block; width: 100%; text-align: center;
+  color: $ink-3; font-size: 28rpx; line-height: 1.4; padding: 20rpx 32rpx;
+  box-sizing: border-box;
+}
 </style>
