@@ -79,12 +79,12 @@ async function renameItem(item: DraftCard) {
 async function removeItem(item: DraftCard) {
   const ok = await askConfirm(
     '删除稿件',
-    `删除后无法恢复。如果「${item.title}」已发布到广场，对应作品也会一起下架。`,
+    `删除后无法恢复。确定删除「${item.title}」吗？`,
   )
   if (!ok) return
   try {
-    const res = await draftsApi.remove(item.id)
-    showTip(res.work_deleted ? '作品也已下架' : '已删除')
+    await draftsApi.remove(item.id)
+    showTip('已删除')
     await load()
   } catch (e) {
     showError(e, '删除失败')

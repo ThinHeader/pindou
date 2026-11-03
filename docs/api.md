@@ -13,11 +13,12 @@ Base URL（本地）：`http://127.0.0.1:3000`
 | 400 | `bad_request` | 参数、图片无法解析、未选图、稿件名称为空或超过 40 字 |
 | 401 | `unauthorized` | 未登录或 token 失效 |
 | 402 | `insufficient_credits` | 出稿时余额不足 |
-| 403 | `forbidden` | 改、删、发布别人的稿，或改删官方模板 |
-| 404 | `not_found` | 稿件 / 作品 / 订单不存在 |
+| 403 | `forbidden` | 改、删别人的稿，或改删官方模板 |
+| 404 | `not_found` | 稿件 / 订单不存在 |
 | 409 | `already_claimed` | 今日积分已领 |
+| 410 | `gone` | 作品发布、作品流、点赞、收藏、评论已关闭 |
 
-除健康检查、充值档位、广场列表 / 详情 / 评论列表、静态文件外，写操作都要带 `Authorization: Bearer <JWT>`。
+除健康检查、充值档位、静态文件外，写操作都要带 `Authorization: Bearer <JWT>`。作品发布和作品互动接口不校验登录，直接返回 410。
 
 ## 健康检查
 
@@ -50,7 +51,7 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 `PUT` 体：`{ "nickname": "豆豆手作" }`（1–20 字）。同样接受 `PATCH`，小程序用 `PUT`（`uni.request` 没有 PATCH）。
 
-返回用户、稿件 / 作品 / 收藏计数、积分快照、最近稿件和最近作品。
+返回用户、稿件 / 历史作品行 / 收藏计数、积分快照和最近稿件。不再返回作品列表。
 
 ## 积分
 
@@ -262,7 +263,7 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 返回更新后的稿件详情。名称 1–40 字。空标题 400「请填写稿件名称」。超长 400「稿件名称请控制在 40 字以内」。不是自己的稿 403「只能修改自己的稿件」。官方模板 403「官方模板不能修改」。不存在 404。
 
-只改稿件本身。已经发布到广场的作品标题不会跟着变，发布当时写到作品上的标题保持原样。
+只改稿件本身。作品发布已关闭，改名不会再写入作品。
 
 ### `DELETE /api/v1/drafts/{id}`
 
@@ -272,8 +273,8 @@ Base URL（本地）：`http://127.0.0.1:3000`
 { "deleted": true, "work_deleted": false }
 ```
 
-- 未发布：删稿件，稿件收藏随外键级联。`work_deleted` 为 `false`。
-- 已发布：同一事务里先删广场作品（点赞、收藏、评论随作品外键级联），再删稿件。`work_deleted` 为 `true`。选择连作品一起删，是因为目前没有单独的下架入口，只拒绝会让已发布稿永远删不掉。
+- 没有关联作品行：删稿件，稿件收藏随外键级联。`work_deleted` 为 `false`。
+- 历史上关联过作品行：同一事务里先删这些行（点赞、收藏、评论随作品外键级联），再删稿件。`work_deleted` 为 `true`。新的发布入口已关闭，正常出稿不会再产生这种关联。
 - 预览图对象在事务提交后删除。上传的原图保留。
 - 不是自己的稿：403「只能删除自己的稿件」。官方模板：403「官方模板不能删除」。不存在：404。
 
@@ -283,34 +284,17 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 ### `POST /api/v1/drafts/{id}/publish`
 
-```json
-{ "title": "可选，1–40 字", "caption": "可选", "category": "pet" }
-```
+已关闭。任意调用返回 `410`，`error` 为 `gone`，文案「该功能已关闭」。不会创建作品，也不会改稿件标题。
 
-`category`：`pet` 萌宠 / `food` 食物 / `pixel` 像素人 / `festival` 节日 / `simple` 简约。只能发布自己的稿。同一稿重复发布返回原作品，不会改标题。
+## 已关闭的作品互动
 
-`title` 不传或空白时，作品沿用稿件当前标题。传了非空标题时，作品用这个标题，并在同一事务里写回稿件，避免稿件库仍显示「未命名草稿」。超过 40 字返回 400，不会发布。
+以下接口一律 `410 Gone`，`error` 为 `gone`。个人主体不提供用户内容发布、点赞、收藏和评论。
 
-## 广场
+- `GET /api/v1/plaza/feed`
+- `GET /api/v1/plaza/works/{id}`
+- `POST /api/v1/plaza/works/{id}/like`
+- `POST /api/v1/plaza/works/{id}/favorite`
+- `GET /api/v1/plaza/works/{id}/comments`
+- `POST /api/v1/plaza/works/{id}/comments`
 
-### `GET /api/v1/plaza/feed?tab=recommend|hot|pet|food|pixel|festival|simple&q=&cursor=&limit=`
-
-无需登录。`hot` 按点赞排序，其余按时间。`next_cursor` 可翻页。登录后 `liked` / `favorited` 会标出当前用户。
-
-### `GET /api/v1/plaza/works/{id}`
-
-### `POST /api/v1/plaza/works/{id}/like`
-
-`{ "liked": true, "like_count": 1 }`，再调一次取消。
-
-### `POST /api/v1/plaza/works/{id}/favorite`
-
-`{ "favorited": true, "favorite_count": 1 }`
-
-### `GET /api/v1/plaza/works/{id}/comments`
-
-### `POST /api/v1/plaza/works/{id}/comments`
-
-`{ "content": "1 到 200 字" }`
-
-启动时如果库里还没有官方模板，会写入「小橘猫吐舌 / 黄油小熊 / 柠檬汽水 / 蜜桃兔耳」和对应广场作品，方便直接浏览。
+启动时如果库里还没有官方模板，会写入「小橘猫吐舌 / 黄油小熊 / 柠檬汽水 / 蜜桃兔耳」，只出现在稿件库，不再写入作品或评论。

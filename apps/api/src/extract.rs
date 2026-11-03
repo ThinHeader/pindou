@@ -14,11 +14,6 @@ pub struct AuthUser {
     pub user_id: Uuid,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct MaybeUser {
-    pub user_id: Option<Uuid>,
-}
-
 pub fn bearer_user(state: &AppState, headers: &HeaderMap) -> AppResult<Option<Uuid>> {
     let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
         return Ok(None);
@@ -50,18 +45,5 @@ impl FromRequestParts<AppState> for AuthUser {
             Some(user_id) => Ok(AuthUser { user_id }),
             None => Err(AppError::Unauthorized("请先登录".into())),
         }
-    }
-}
-
-impl FromRequestParts<AppState> for MaybeUser {
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(MaybeUser {
-            user_id: bearer_user(state, &parts.headers)?,
-        })
     }
 }

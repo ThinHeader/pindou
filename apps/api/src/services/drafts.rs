@@ -1,4 +1,4 @@
-//! 稿件：出稿、列表、详情、改名、删除、收藏、发布到广场。
+//! 稿件：出稿、列表、详情、改名、删除、收藏。
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
@@ -74,7 +74,7 @@ pub struct DraftDetail {
 #[derive(Debug, Serialize)]
 pub struct DeleteOutput {
     pub deleted: bool,
-    /// 这张稿已经发布时，广场作品会一起删除。
+    /// 历史上若关联过作品行，删除稿件时会一并清掉。
     pub work_deleted: bool,
 }
 
@@ -226,8 +226,7 @@ pub async fn rename(
 
 /// 删除自己的稿。
 ///
-/// 已发布的稿会连同广场作品一起删除（点赞、收藏、评论随作品外键级联）。
-/// 没有单独的下架入口，只拒绝会让已发布稿永远删不掉。
+/// 历史上若关联过作品行，会在同一事务里先删掉（互动数据随外键级联），再删稿件。
 /// 官方模板不删。预览图在事务提交后清理，上传原图保留。
 pub async fn delete_owned(
     state: &AppState,

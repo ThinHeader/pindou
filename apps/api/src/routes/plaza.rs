@@ -1,105 +1,25 @@
-//! 广场作品流与互动
+//! 作品浏览与互动已关闭。
+//!
+//! 个人主体不提供用户内容发布、点赞、收藏和评论。
+//! 路由保留，避免旧地址落到无关处理，统一返回 410。
 
 use axum::{
-    extract::{Path, Query, State},
     routing::{get, post},
-    Json, Router,
+    Router,
 };
-use serde::Deserialize;
-use serde_json::json;
-use uuid::Uuid;
 
-use crate::error::AppResult;
-use crate::extract::{AuthUser, MaybeUser};
-use crate::services::plaza;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
-pub struct FeedQuery {
-    pub tab: Option<String>,
-    pub q: Option<String>,
-    pub cursor: Option<String>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CommentRequest {
-    pub content: String,
+async fn gone() -> AppResult<()> {
+    Err(AppError::Gone("该功能已关闭".into()))
 }
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/plaza/feed", get(feed))
-        .route("/plaza/works/{id}", get(work))
-        .route("/plaza/works/{id}/like", post(like))
-        .route("/plaza/works/{id}/favorite", post(favorite))
-        .route(
-            "/plaza/works/{id}/comments",
-            get(comments).post(add_comment),
-        )
-}
-
-async fn feed(
-    State(state): State<AppState>,
-    viewer: MaybeUser,
-    Query(q): Query<FeedQuery>,
-) -> AppResult<Json<plaza::FeedPage>> {
-    Ok(Json(
-        plaza::feed(
-            &state,
-            viewer.user_id,
-            q.tab.as_deref().unwrap_or("recommend"),
-            q.q.as_deref().unwrap_or(""),
-            q.cursor.as_deref(),
-            q.limit.unwrap_or(20),
-        )
-        .await?,
-    ))
-}
-
-async fn work(
-    State(state): State<AppState>,
-    viewer: MaybeUser,
-    Path(id): Path<Uuid>,
-) -> AppResult<Json<plaza::WorkCard>> {
-    Ok(Json(plaza::get_work(&state, viewer.user_id, id).await?))
-}
-
-async fn like(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(id): Path<Uuid>,
-) -> AppResult<Json<serde_json::Value>> {
-    let (liked, like_count) = plaza::toggle_like(&state, auth.user_id, id).await?;
-    Ok(Json(json!({ "liked": liked, "like_count": like_count })))
-}
-
-async fn favorite(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(id): Path<Uuid>,
-) -> AppResult<Json<serde_json::Value>> {
-    let (favorited, favorite_count) = plaza::toggle_favorite(&state, auth.user_id, id).await?;
-    Ok(Json(
-        json!({ "favorited": favorited, "favorite_count": favorite_count }),
-    ))
-}
-
-async fn comments(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> AppResult<Json<serde_json::Value>> {
-    let items = plaza::list_comments(&state, id).await?;
-    Ok(Json(json!({ "items": items })))
-}
-
-async fn add_comment(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<CommentRequest>,
-) -> AppResult<Json<plaza::CommentDto>> {
-    Ok(Json(
-        plaza::add_comment(&state, auth.user_id, id, &body.content).await?,
-    ))
+        .route("/plaza/feed", get(gone))
+        .route("/plaza/works/{id}", get(gone))
+        .route("/plaza/works/{id}/like", post(gone))
+        .route("/plaza/works/{id}/favorite", post(gone))
+        .route("/plaza/works/{id}/comments", get(gone).post(gone))
 }

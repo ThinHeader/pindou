@@ -8,9 +8,9 @@
       }
     },
     {
-      "path": "pages/plaza/index",
+      "path": "pages/tutorials/index",
       "style": {
-        "navigationBarTitleText": "拼豆广场"
+        "navigationBarTitleText": "教程"
       }
     },
     {
@@ -62,9 +62,9 @@
       }
     },
     {
-      "path": "pages/work/detail",
+      "path": "pages/tutorials/detail",
       "style": {
-        "navigationBarTitleText": "作品详情"
+        "navigationBarTitleText": "教程详情"
       }
     },
     {
@@ -89,10 +89,10 @@
         "selectedIconPath": "static/tab-home-active.png"
       },
       {
-        "pagePath": "pages/plaza/index",
-        "text": "广场",
-        "iconPath": "static/tab-plaza.png",
-        "selectedIconPath": "static/tab-plaza-active.png"
+        "pagePath": "pages/tutorials/index",
+        "text": "教程",
+        "iconPath": "static/tab-tutorial.png",
+        "selectedIconPath": "static/tab-tutorial-active.png"
       },
       {
         "pagePath": "pages/create/index",
