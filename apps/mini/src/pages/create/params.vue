@@ -3,19 +3,13 @@ import CreditEmptySheet from '../../components/CreditEmptySheet.vue'
 import {
   useCreateStore,
   type BoardSize,
-  type CartoonStrength,
   type PaletteBrand,
   type PalettePref,
-  type SubjectType,
 } from '../../stores/create'
 import { useCreditsStore } from '../../stores/credits'
 import { showError, showTip } from '../../utils/ui'
-import { ref } from 'vue'
-
 const create = useCreateStore()
 const credits = useCreditsStore()
-const advanced = ref(false)
-
 const sizes: { n: BoardSize; desc: string }[] = [
   { n: 52, desc: '约 2704 钉 · 主力板 · 约 13.5cm' },
   { n: 78, desc: '约 6084 钉 · 常见大板 · 约 20cm' },
@@ -26,16 +20,6 @@ const prefs: { id: PalettePref; label: string }[] = [
   { id: 'warm', label: '暖色优先' },
   { id: 'macaron', label: '马卡龙' },
   { id: 'contrast', label: '高对比' },
-]
-const strengths: { id: CartoonStrength; label: string }[] = [
-  { id: 'light', label: '轻' },
-  { id: 'standard', label: '标准' },
-  { id: 'strong', label: '强' },
-]
-const subjects: { id: SubjectType; label: string }[] = [
-  { id: 'person', label: '人像' },
-  { id: 'pet', label: '宠物' },
-  { id: 'object', label: '静物' },
 ]
 const brands: { id: PaletteBrand; label: string }[] = [
   { id: 'generic', label: '通用拼豆' },
@@ -82,7 +66,7 @@ function generate() {
       <view class="meta">
         <text class="name">{{ create.hasImage ? '参考图已选' : '还没有参考图' }}</text>
         <text class="sub">{{ create.imageLabel || '返回上一步拍照或选相册' }}</text>
-        <text class="tag">将走：去背→卡通→拼豆</text>
+        <text class="tag">将走：AI 出稿→拼豆像素</text>
         <text class="change" @click="back">更换图片</text>
       </view>
     </view>
@@ -141,68 +125,21 @@ function generate() {
       >{{ pref.label }}</view>
     </view>
 
-    <view class="sec-title"><text>智能处理</text></view>
-    <view class="switch-card">
-      <view class="switch-txt">
-        <text class="strong">智能去背</text>
-        <text class="desc">默认开启 · 阿里抠图清背景</text>
-      </view>
+    <view class="sec-title"><text>色盘品牌</text></view>
+    <view class="chips">
       <view
-        class="switch"
-        :class="{ on: create.removeBg }"
-        @click="create.removeBg = !create.removeBg"
-      >
-        <view class="knob" />
-      </view>
+        v-for="item in brands"
+        :key="item.id"
+        class="chip"
+        :class="{ on: create.paletteBrand === item.id }"
+        @click="create.paletteBrand = item.id"
+      >{{ item.label }}</view>
     </view>
-    <view class="slider-card strength">
-      <view class="row">
-        <text class="strong">卡通强度</text>
-        <text class="desc">人物动漫化</text>
-      </view>
-      <view class="chips">
-        <view
-          v-for="item in strengths"
-          :key="item.id"
-          class="chip"
-          :class="{ on: create.cartoonStrength === item.id }"
-          @click="create.cartoonStrength = item.id"
-        >{{ item.label }}</view>
-      </view>
-    </view>
-
-    <view class="fold" @click="advanced = !advanced">
-      <text class="strong">高级选项</text>
-      <text class="desc">{{ advanced ? '收起' : '主体类型 · 色盘品牌' }}</text>
-    </view>
-    <view v-if="advanced" class="advanced">
-      <view class="sec-title"><text>主体类型</text></view>
-      <view class="chips">
-        <view
-          v-for="item in subjects"
-          :key="item.id"
-          class="chip"
-          :class="{ on: create.subjectType === item.id }"
-          @click="create.subjectType = item.id"
-        >{{ item.label }}</view>
-      </view>
-      <text class="name-hint">人像走人体分割，宠物和静物走通用分割。</text>
-      <view class="sec-title"><text>色盘品牌</text></view>
-      <view class="chips">
-        <view
-          v-for="item in brands"
-          :key="item.id"
-          class="chip"
-          :class="{ on: create.paletteBrand === item.id }"
-          @click="create.paletteBrand = item.id"
-        >{{ item.label }}</view>
-      </view>
-      <text class="name-hint">色号来自内置拼豆 SKU。品牌是色板子集，不是扩散出图。</text>
-    </view>
+    <text class="name-hint">色号来自内置拼豆 SKU。品牌是色板子集。珠图按上面选定的 52 / 78 / 104 做最近邻，不跟 AI 出图尺寸走。</text>
 
     <view class="note">
       预估消耗 <text class="em">{{ credits.generateCost }}</text> 积分 · 余额
-      <text class="em">{{ credits.balance }}</text>（一次性含去背+卡通+拼豆）
+      <text class="em">{{ credits.balance }}</text>（一次性含 AI 出稿与拼豆像素）
     </view>
     <view class="actions">
       <view class="btn ghost" @click="back">上一步</view>

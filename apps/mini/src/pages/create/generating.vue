@@ -20,19 +20,13 @@ let terminal = false
 let timer: ReturnType<typeof setTimeout> | null = null
 let jobId = ''
 
-const strengthLabel = computed(() => {
-  if (create.cartoonStrength === 'light') return '轻'
-  if (create.cartoonStrength === 'strong') return '强'
-  return '标准'
-})
-
 const stages = computed<JobStage[]>(() => {
   if (job.value?.stages?.length) return job.value.stages
+  const board = `${create.boardSize}×${create.boardSize}`
   return [
     { id: 'upload', label: '上传原图', state: 'active', detail: '正在上传原图' },
-    { id: 'matting', label: '智能去背', state: 'pending', detail: create.removeBg ? '阿里抠图清背景' : '已关闭' },
-    { id: 'cartoon', label: '人物动漫化', state: 'pending', detail: `卡通强度 · ${strengthLabel.value}` },
-    { id: 'pixel', label: '拼豆量化', state: 'pending', detail: '自研像素 / 色板映射' },
+    { id: 'seedream', label: 'AI 出稿', state: 'pending', detail: 'Seedream Flash 平涂插画' },
+    { id: 'pixel', label: '拼豆像素', state: 'pending', detail: `最近邻色号 · ${board}` },
   ]
 })
 
@@ -229,7 +223,7 @@ function dot(stage: JobStage, index: number) {
       <view class="bar"><view class="fill" :style="{ width: bar + '%' }" /></view>
       <view class="meta"><text>进度 {{ bar }}%</text><text>{{ barLabel }}</text></view>
     </view>
-    <view v-else class="note">可稍后再试，或调低卡通强度后重新出稿。失败不计费，积分仍保留。</view>
+    <view v-else class="note">可稍后再试，或换一张主体更清楚的照片。失败不计费，积分仍保留。</view>
 
     <view v-if="failed" class="actions">
       <view class="btn primary" @click="retry">重试出稿</view>

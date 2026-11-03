@@ -866,4 +866,16 @@ mod tests {
             .all(|s| shop.contains(&s.code.as_str())));
         assert_eq!(pattern.cells.len(), 52 * 52);
     }
+
+    #[test]
+    fn bead_grid_follows_selected_board_not_source_size() {
+        let png = solid_png([0xFF, 0x6B, 0x5B]);
+        for board in [52u32, 78, 104] {
+            let pattern = pixelate_beads(&png, board, 8, Pref::Auto, Brand::Generic).unwrap();
+            assert_eq!(pattern.width, board);
+            assert_eq!(pattern.cells.len(), (board * board) as usize);
+            let sum: i32 = pattern.palette.iter().map(|swatch| swatch.count).sum();
+            assert_eq!(sum, (board * board) as i32);
+        }
+    }
 }

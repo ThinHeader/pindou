@@ -30,11 +30,11 @@ pub struct GenerateRequest {
     pub color_count: Option<u32>,
     pub palette_pref: Option<String>,
     pub title: Option<String>,
-    /// 默认开启。
+    /// 旧参数，已忽略。去背不再是单独一步。
     pub remove_bg: Option<bool>,
-    /// light / standard / strong，默认 standard。
+    /// 旧参数，已忽略。卡通强度不再影响 Seedream。
     pub cartoon_strength: Option<String>,
-    /// person / pet / object，默认 person。
+    /// person / pet / object，默认 person。只写入稿件标签。
     pub subject_type: Option<String>,
     /// generic / mard / perler / shop，默认 generic。
     pub palette_brand: Option<String>,
