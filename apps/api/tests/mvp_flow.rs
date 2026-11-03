@@ -978,3 +978,65 @@ async fn profile_avatar_and_nickname_roundtrip() {
     assert_eq!(status, StatusCode::GONE, "{feed}");
     assert_eq!(feed["error"], "gone");
 }
+
+#[tokio::test]
+async fn profile_put_json_saves_chinese_nickname_and_avatar_base64() {
+    let app = app().await;
+    let code = format!("mock:profile-json-{}", Uuid::new_v4());
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    assert_eq!(login["user"]["nickname"], "拼豆玩家");
+    assert!(login["user"]["avatar_url"].is_null());
+    let token = login["token"].as_str().unwrap();
+
+    let (status, saved) = call(
+        &app,
+        "PUT",
+        "/api/v1/me",
+        Some(token),
+        Some(json!({ "nickname": "肚圆", "avatar_base64": png_base64() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["user"]["nickname"], "肚圆");
+    let avatar = saved["user"]["avatar_url"]
+        .as_str()
+        .expect("avatar url")
+        .to_string();
+    assert!(avatar.contains("/files/uploads/"), "{avatar}");
+
+    let (status, me) = call(&app, "GET", "/api/v1/me", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["user"]["nickname"], "肚圆");
+    assert_eq!(me["user"]["avatar_url"], avatar);
+
+    let (status, renamed) = call(
+        &app,
+        "PUT",
+        "/api/v1/me",
+        Some(token),
+        Some(json!({ "nickname": "小圆" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["user"]["nickname"], "小圆");
+    assert_eq!(renamed["user"]["avatar_url"], avatar);
+
+    let (status, bad) = call(
+        &app,
+        "PUT",
+        "/api/v1/me",
+        Some(token),
+        Some(json!({ "nickname": "小圆", "avatar_base64": "not-an-image" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+    assert_eq!(bad["error"], "bad_request");
+}

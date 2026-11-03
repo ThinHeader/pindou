@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::extract::AuthUser;
+use crate::services::storage::decode_image_base64;
 use crate::services::{auth, credits, drafts};
 use crate::state::AppState;
 
@@ -17,6 +18,8 @@ use super::uploads::save_image;
 #[derive(Debug, Deserialize)]
 pub struct PatchMe {
     pub nickname: Option<String>,
+    /// 小程序登录页用 wx.request 提交的头像。与出稿 `image_base64` 相同的标准 base64。
+    pub avatar_base64: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,8 +52,28 @@ async fn patch_me(
     auth: AuthUser,
     Json(body): Json<PatchMe>,
 ) -> AppResult<Json<MeResponse>> {
-    let nickname = body.nickname.as_deref().unwrap_or("");
-    auth::save_display(&state.db, auth.user_id, Some(nickname), None).await?;
+    let avatar_key = match body
+        .avatar_base64
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(raw) => {
+            let bytes = decode_image_base64(raw)?;
+            Some(save_image(&state.storage, &bytes).await?.key)
+        }
+        None => None,
+    };
+    // 只改昵称时，缺省或空白仍报「1 到 20 个字」。带了头像时，空白昵称表示不改昵称。
+    let nickname = if avatar_key.is_some() {
+        body.nickname
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        Some(body.nickname.as_deref().unwrap_or(""))
+    };
+    auth::save_display(&state.db, auth.user_id, nickname, avatar_key.as_deref()).await?;
     Ok(Json(load(&state, auth.user_id).await?))
 }
 

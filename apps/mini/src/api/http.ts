@@ -13,8 +13,6 @@ import type {
   MeProfile,
   StoredObject,
 } from './types'
-import { encodeProfileMultipart } from '../utils/local-image'
-
 const TOKEN_KEY = 'pindou_token'
 
 export const API_BASE = (
@@ -100,80 +98,12 @@ export function uploadImage(filePath: string): Promise<StoredObject> {
   })
 }
 
-export function uploadProfile(filePath: string, nickname: string): Promise<MeProfile> {
-  return new Promise((resolve, reject) => {
-    uni.uploadFile({
-      url: `${API_BASE}/api/v1/me/profile`,
-      filePath,
-      name: 'file',
-      formData: nickname ? { nickname } : {},
-      header: authHeader(),
-      success: (res) => {
-        let data: MeProfile & ApiError
-        try {
-          data = typeof res.data === 'string' ? JSON.parse(res.data) : (res.data as MeProfile & ApiError)
-        } catch {
-          reject({ message: '资料响应无法解析' } satisfies ApiError)
-          return
-        }
-        if (res.statusCode >= 200 && res.statusCode < 300 && data.user) {
-          resolve(data)
-          return
-        }
-        reject({
-          statusCode: res.statusCode,
-          error: data.error,
-          message: data.message || '保存失败',
-        } satisfies ApiError)
-      },
-      fail: () => reject({ message: '保存失败，请重试' } satisfies ApiError),
-    })
-  })
-}
-
-/**
- * 登录头像走 wx.request，不走 uploadFile。
- * chooseAvatar 的临时路径会让 uploadFile 在真机直接 fail（toast 就是「保存失败，请重试」），
- * 中文昵称放进 formData 还会乱码。接口仍是现有的 multipart POST /api/v1/me/profile。
- */
-export function postProfileImage(file: Uint8Array, nickname: string): Promise<MeProfile> {
-  const encoded = encodeProfileMultipart(nickname, file)
-  return new Promise((resolve, reject) => {
-    uni.request({
-      url: `${API_BASE}/api/v1/me/profile`,
-      method: 'POST',
-      data: encoded.body as unknown as UniApp.RequestOptions['data'],
-      header: {
-        'Content-Type': encoded.contentType,
-        ...authHeader(),
-      },
-      success: (res) => {
-        let data: MeProfile & ApiError
-        try {
-          data = typeof res.data === 'string' ? JSON.parse(res.data) : (res.data as MeProfile & ApiError)
-        } catch {
-          reject({ message: '资料响应无法解析' } satisfies ApiError)
-          return
-        }
-        if (res.statusCode >= 200 && res.statusCode < 300 && data.user) {
-          resolve(data)
-          return
-        }
-        reject({
-          statusCode: res.statusCode,
-          error: data.error,
-          message: data.message || '保存失败',
-        } satisfies ApiError)
-      },
-      fail: () => reject({ message: '保存失败，请重试' } satisfies ApiError),
-    })
-  })
-}
-
 export const authApi = {
   wxLogin: (code: string) => http.post<LoginResult>('/api/v1/auth/wx-login', { code }),
   me: () => http.get<MeProfile>('/api/v1/me'),
   putNickname: (nickname: string) => http.put<MeProfile>('/api/v1/me', { nickname }),
+  putProfile: (body: { nickname?: string; avatar_base64?: string }) =>
+    http.put<MeProfile>('/api/v1/me', body),
 }
 
 export const creditsApi = {
