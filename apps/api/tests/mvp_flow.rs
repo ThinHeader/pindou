@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-fn png_base64() -> String {
+fn png_bytes() -> Vec<u8> {
     let img = RgbaImage::from_fn(24, 24, |x, y| {
         if x < 12 {
             Rgba([0xFF, 0x6B, 0x5B, 255])
@@ -24,7 +24,11 @@ fn png_base64() -> String {
     image::DynamicImage::ImageRgba8(img)
         .write_to(&mut buf, ImageFormat::Png)
         .unwrap();
-    base64_std(&buf.into_inner())
+    buf.into_inner()
+}
+
+fn png_base64() -> String {
+    base64_std(&png_bytes())
 }
 
 fn base64_std(bytes: &[u8]) -> String {
@@ -852,4 +856,143 @@ async fn mvp_plus_mock_pipeline_tags_and_skip_matting() {
         "已完成的任务取消后仍是完成态 {kept}"
     );
     assert_eq!(kept["charged"], true);
+}
+
+async fn upload_png(app: &axum::Router, token: &str) -> (StatusCode, Value) {
+    let boundary = "----pindouprofile";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&png_bytes());
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/uploads")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes) }));
+    (status, value)
+}
+
+#[tokio::test]
+async fn profile_avatar_and_nickname_roundtrip() {
+    let app = app().await;
+    let code = format!("mock:profile-{}", Uuid::new_v4());
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    assert_eq!(login["user"]["nickname"], "拼豆玩家");
+    assert!(login["user"]["avatar_url"].is_null());
+    let token = login["token"].as_str().unwrap();
+
+    let (status, denied) = call(
+        &app,
+        "PUT",
+        "/api/v1/me",
+        None,
+        Some(json!({ "nickname": "豆" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+
+    let (status, empty) = call(&app, "PUT", "/api/v1/me", Some(token), Some(json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{empty}");
+
+    let (status, remote) = call(
+        &app,
+        "PUT",
+        "/api/v1/me",
+        Some(token),
+        Some(json!({ "avatar_key": "https://evil.test/a.png" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{remote}");
+
+    let missing_key = format!("uploads/{}.png", Uuid::new_v4());
+    let (status, missing) = call(
+        &app,
+        "PUT",
+        "/api/v1/me",
+        Some(token),
+        Some(json!({ "avatar_key": missing_key })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{missing}");
+
+    let (status, uploaded) = upload_png(&app, token).await;
+    assert_eq!(status, StatusCode::OK, "{uploaded}");
+    let key = uploaded["key"].as_str().expect("upload key").to_string();
+
+    let (status, patched) = call(
+        &app,
+        "PUT",
+        "/api/v1/me",
+        Some(token),
+        Some(json!({ "nickname": "豆豆手作", "avatar_key": key })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    assert_eq!(patched["user"]["nickname"], "豆豆手作");
+    let avatar = patched["user"]["avatar_url"].as_str().expect("avatar url");
+    assert!(avatar.contains(&key), "{avatar}");
+    assert!(avatar.starts_with("http"), "{avatar}");
+
+    let (status, me) = call(&app, "GET", "/api/v1/me", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["user"]["nickname"], "豆豆手作");
+    assert_eq!(me["user"]["avatar_url"], avatar);
+
+    let (status, renamed) = call(
+        &app,
+        "PUT",
+        "/api/v1/me",
+        Some(token),
+        Some(json!({ "nickname": "小豆" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["user"]["nickname"], "小豆");
+    assert_eq!(renamed["user"]["avatar_url"], avatar);
+
+    let (status, again) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["user"]["nickname"], "小豆");
+    assert_eq!(again["user"]["avatar_url"], avatar);
+
+    let (status, feed) = call(
+        &app,
+        "GET",
+        "/api/v1/plaza/feed?tab=recommend&limit=20",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::GONE, "{feed}");
+    assert_eq!(feed["error"], "gone");
 }

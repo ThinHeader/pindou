@@ -11,7 +11,8 @@ use super::auth::user_dto;
 
 #[derive(Debug, Deserialize)]
 pub struct PatchMe {
-    pub nickname: String,
+    pub nickname: Option<String>,
+    pub avatar_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,7 +43,14 @@ async fn patch_me(
     auth: AuthUser,
     Json(body): Json<PatchMe>,
 ) -> AppResult<Json<MeResponse>> {
-    auth::update_nickname(&state.db, auth.user_id, &body.nickname).await?;
+    auth::update_profile(
+        &state.db,
+        &state.storage,
+        auth.user_id,
+        body.nickname.as_deref(),
+        body.avatar_key.as_deref(),
+    )
+    .await?;
     Ok(Json(load(&state, auth.user_id).await?))
 }
 
@@ -71,7 +79,7 @@ async fn load(state: &AppState, user_id: Uuid) -> AppResult<MeResponse> {
     let recent_drafts = drafts::list(state, user_id, "mine", "").await?;
     let recent_drafts = recent_drafts.into_iter().take(6).collect();
     Ok(MeResponse {
-        user: user_dto(&user),
+        user: user_dto(&state.storage, &user),
         stats: StatsDto {
             drafts: drafts_n,
             works: works_n,
