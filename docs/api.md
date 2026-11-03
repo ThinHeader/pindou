@@ -49,11 +49,20 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 ### `GET /api/v1/me` · `PUT /api/v1/me` · `POST /api/v1/me/profile`
 
-点「微信登录」时先调 `wx.getUserProfile`（用途说明不超过 30 字）。基础库 2.27.1 起该接口不再弹授权窗，昵称固定为「微信用户」、头像为默认灰图，客户端丢弃这份匿名结果，并立刻打开微信规定的头像昵称填写（`chooseAvatar` + `type="nickname"`）。换票后用 `POST /api/v1/me/profile` 写入。两者都只出现在登录响应和 `/me`，用来在「我的」展示当前账号。
+点「微信登录」时先调 `wx.getUserProfile`（用途说明不超过 30 字）。基础库 2.27.1 起该接口不再弹授权窗，昵称固定为「微信用户」、头像为默认灰图，客户端丢弃这份匿名结果，并立刻打开微信规定的头像昵称填写（`chooseAvatar` + `type="nickname"`）。换票后用 `PUT /api/v1/me` 写入头像和昵称。两者都只出现在登录响应和 `/me`，用来在「我的」展示当前账号。
 
-`PUT`（也接受 `PATCH`）只改昵称：`{ "nickname": "豆豆手作" }`，1–20 个字。
+`PUT`（也接受 `PATCH`）的请求体是 JSON，和小程序 `wx.login` 换票同一条 `wx.request`：
 
-`POST /api/v1/me/profile` 是 `multipart/form-data`：
+```json
+{ "nickname": "肚圆", "avatar_base64": "<标准 base64，可带 data URL 前缀>" }
+```
+
+- `nickname`：1–20 个字。只改昵称时必填。
+- `avatar_base64`：可选，JPG / PNG / GIF。解码后与出稿参考图一样写入对象存储，库里只存对象键。和头像一起提交时，空昵称表示不改昵称。
+
+小程序不能用 `wx.uploadFile`，也不能用 `wx.request` 发 `ArrayBuffer` 的 multipart：这两种在真机上都会在收到 HTTP 响应之前失败（toast「保存失败，请重试」），登录 JSON 却是成功的。所以登录页把 `chooseAvatar` 临时文件读成 base64，放进上面的 JSON。
+
+`POST /api/v1/me/profile` 仍是 `multipart/form-data`，给已经能上传文件的客户端：
 
 - `nickname`：可选，1–20 个字。空则不改昵称。
 - `file`：可选，JPG / PNG / GIF。服务写入现有对象存储（与出稿参考图相同的 `key` / `url`），库里只存对象键。

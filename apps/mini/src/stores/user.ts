@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
-import { authApi, errorOf, postProfileImage, uploadProfile } from '../api/http'
+import { authApi, errorOf } from '../api/http'
 import type { MeProfile, UserInfo } from '../api/types'
-import { copyAvatarForUpload, readImageBytes } from '../utils/local-image'
+import { readAvatarBase64 } from '../utils/local-image'
 
 const TOKEN_KEY = 'pindou_token'
 const USER_KEY = 'pindou_user'
@@ -96,28 +96,17 @@ export const useUserStore = defineStore('user', {
 })
 
 /**
- * 「保存失败，请重试」只在 uni.uploadFile 的 fail 里出现。
- * chooseAvatar 临时路径让这次上传在真机直接失败，中文昵称放进 formData 还会乱码。
- * 先用和登录相同的 wx.request 把 multipart 交给现有的 /me/profile；请求没到达接口时，
- * 再把文件拷到用户目录后 uploadFile，昵称单独走 PUT /me。
+ * #14 的两条路在真机上都进了 fail，请求到不了接口：
+ * wx.request 发送 ArrayBuffer multipart，以及 wx.uploadFile。
+ * 登录用的是 JSON wx.request，所以头像改成 base64 放进 PUT /api/v1/me。
  */
 async function saveAvatarProfile(filePath: string, nickname: string): Promise<MeProfile> {
-  let bytes: Uint8Array | null = null
-  try {
-    bytes = await readImageBytes(filePath)
-  } catch {
-    bytes = null
+  const avatarBase64 = await readAvatarBase64(filePath)
+  const body: { nickname?: string; avatar_base64: string } = { avatar_base64: avatarBase64 }
+  if (nickname) body.nickname = nickname
+  const profile = await authApi.putProfile(body)
+  if (!profile.user.avatar_url) {
+    throw { message: '头像没有保存，请更新服务' }
   }
-  if (bytes) {
-    try {
-      return await postProfileImage(bytes, nickname)
-    } catch (err) {
-      const message = errorOf(err).message
-      if (errorOf(err).statusCode === 401 || message === '昵称需要 1 到 20 个字') throw err
-    }
-  }
-  const localPath = await copyAvatarForUpload(filePath)
-  const uploaded = await uploadProfile(localPath, '')
-  if (!nickname) return uploaded
-  return authApi.putNickname(nickname)
+  return profile
 }
