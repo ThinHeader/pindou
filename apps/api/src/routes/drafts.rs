@@ -9,9 +9,9 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::extract::AuthUser;
-use crate::services::{drafts, pipeline, plaza};
+use crate::services::{drafts, pipeline};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -44,13 +44,6 @@ pub struct GenerateRequest {
 pub struct ListQuery {
     pub tab: Option<String>,
     pub q: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PublishRequest {
-    pub title: Option<String>,
-    pub caption: Option<String>,
-    pub category: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,21 +146,6 @@ async fn favorite(
     Ok(Json(json!({ "favorited": favorited })))
 }
 
-async fn publish(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<PublishRequest>,
-) -> AppResult<Json<plaza::WorkCard>> {
-    Ok(Json(
-        plaza::publish(
-            &state,
-            auth.user_id,
-            id,
-            body.title,
-            body.caption,
-            body.category,
-        )
-        .await?,
-    ))
+async fn publish() -> AppResult<()> {
+    Err(AppError::Gone("该功能已关闭".into()))
 }

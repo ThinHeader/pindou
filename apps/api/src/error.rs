@@ -29,6 +29,9 @@ pub enum AppError {
     NotFound(String),
 
     #[error("{0}")]
+    Gone(String),
+
+    #[error("{0}")]
     ServiceUnavailable(String),
 
     #[error(transparent)]
@@ -64,6 +67,7 @@ impl IntoResponse for AppError {
                 m.clone(),
             ),
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, "not_found", m.clone()),
+            AppError::Gone(m) => (StatusCode::GONE, "gone", m.clone()),
             AppError::ServiceUnavailable(m) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "unavailable", m.clone())
             }

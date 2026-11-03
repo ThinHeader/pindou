@@ -3,8 +3,9 @@ import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import CreditEmptySheet from '../../components/CreditEmptySheet.vue'
 import CreditPill from '../../components/CreditPill.vue'
-import { draftsApi, plazaApi } from '../../api/http'
-import type { DraftCard, WorkCard } from '../../api/types'
+import { draftsApi } from '../../api/http'
+import type { DraftCard } from '../../api/types'
+import { tutorials } from '../../data/tutorials'
 import { useCreditsStore } from '../../stores/credits'
 import { useUserStore } from '../../stores/user'
 import { boardLabel } from '../../utils/ui'
@@ -12,7 +13,7 @@ import { boardLabel } from '../../utils/ui'
 const credits = useCreditsStore()
 const user = useUserStore()
 const drafts = ref<DraftCard[]>([])
-const works = ref<WorkCard[]>([])
+const picks = tutorials.slice(0, 4)
 
 onShow(async () => {
   if (user.isLoggedIn) {
@@ -26,19 +27,13 @@ onShow(async () => {
   } else {
     drafts.value = []
   }
-  try {
-    const feed = await plazaApi.feed('recommend')
-    works.value = feed.items.slice(0, 4)
-  } catch {
-    works.value = []
-  }
 })
 
 function goCreate() {
   uni.switchTab({ url: '/pages/create/index' })
 }
-function goPlaza() {
-  uni.switchTab({ url: '/pages/plaza/index' })
+function goTutorials() {
+  uni.switchTab({ url: '/pages/tutorials/index' })
 }
 function goLibrary() {
   uni.switchTab({ url: '/pages/library/index' })
@@ -46,8 +41,8 @@ function goLibrary() {
 function openDraft(id: string) {
   uni.navigateTo({ url: `/pages/draft/detail?id=${id}` })
 }
-function openWork(id: string) {
-  uni.navigateTo({ url: `/pages/work/detail?id=${id}` })
+function openTutorial(id: string) {
+  uni.navigateTo({ url: `/pages/tutorials/detail?id=${id}` })
 }
 function stockSoon() {
   uni.showToast({ title: '豆色库存即将开放', icon: 'none' })
@@ -75,7 +70,7 @@ function stockSoon() {
 
     <view class="shortcuts">
       <view class="shortcut" @click="goCreate"><text class="sico">🖼</text>相册出稿</view>
-      <view class="shortcut" @click="goPlaza"><text class="sico">▦</text>逛广场</view>
+      <view class="shortcut" @click="goTutorials"><text class="sico">▦</text>看教程</view>
       <view class="shortcut" @click="goLibrary"><text class="sico">▤</text>我的稿件</view>
       <view class="shortcut" @click="stockSoon">
         <text class="sico">🎨</text>豆色库存
@@ -99,20 +94,21 @@ function stockSoon() {
     <view v-else class="empty">登录并出稿后，未完成的稿会出现在这里</view>
 
     <view class="sec-title">
-      <text>今日推荐</text>
-      <text class="sec-link" @click="goPlaza">更多</text>
+      <text>官方教程</text>
+      <text class="sec-link" @click="goTutorials">更多</text>
     </view>
-    <view v-if="works.length" class="grid">
-      <view v-for="item in works" :key="item.id" class="rec" @click="openWork(item.id)">
-        <image class="cover" :src="item.preview_url" mode="aspectFill" />
+    <view v-if="picks.length" class="grid">
+      <view v-for="item in picks" :key="item.id" class="rec" @click="openTutorial(item.id)">
+        <view class="cover" :style="{ background: item.tint }">
+          <text class="cover-emoji">{{ item.cover }}</text>
+        </view>
         <text class="name">{{ item.title }}</text>
         <view class="subrow">
-          <text>{{ boardLabel(item.board_size, item.color_count) }}</text>
-          <text class="likes">♥ {{ item.like_count }}</text>
+          <text>{{ item.kicker }}</text>
         </view>
       </view>
     </view>
-    <view v-else class="empty">广场还在预热，稍后再来看看</view>
+    <view v-else class="empty">教程准备中</view>
 
     <CreditEmptySheet />
   </view>
@@ -180,8 +176,14 @@ function stockSoon() {
   border: 1rpx solid $line;
   overflow: hidden;
 }
-.cover { width: 100%; height: 280rpx; background: $brand-lighter; display: block; }
+.cover {
+  width: 100%;
+  height: 200rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cover-emoji { font-size: 64rpx; }
 .rec .name { display: block; padding: 12rpx 16rpx 0; }
 .subrow { display: flex; justify-content: space-between; padding: 6rpx 16rpx 16rpx; }
-.likes { color: $brand; }
 </style>

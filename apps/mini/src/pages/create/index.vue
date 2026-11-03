@@ -89,7 +89,7 @@ function goLibrary() {
       <CreditPill compact />
     </view>
 
-    <view v-if="create.referenceTitle" class="ref">参考作品：{{ create.referenceTitle }}</view>
+    <view v-if="create.referenceTitle" class="ref">参考教程：{{ create.referenceTitle }}</view>
 
     <view class="pixels">
       <view v-for="c in ['#FF6B5B', '#FFB088', '#FFD166', '#7BDFF2', '#C9B1FF']" :key="c" class="px" :style="{ background: c }" />

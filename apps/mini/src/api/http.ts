@@ -1,6 +1,5 @@
 import type {
   ApiError,
-  CommentItem,
   CreditOrder,
   CreditPack,
   WxPayParams,
@@ -13,7 +12,6 @@ import type {
   LoginResult,
   MeProfile,
   StoredObject,
-  WorkCard,
 } from './types'
 
 const TOKEN_KEY = 'pindou_token'
@@ -161,27 +159,11 @@ export const draftsApi = {
   remove: (id: string) =>
     http.del<{ deleted: boolean; work_deleted: boolean }>(`/api/v1/drafts/${id}`),
   favorite: (id: string) => http.post<{ favorited: boolean }>(`/api/v1/drafts/${id}/favorite`),
-  publish: (id: string, body: { title?: string; caption?: string; category?: string }) =>
-    http.post<WorkCard>(`/api/v1/drafts/${id}/publish`, body),
 }
 
 export const jobsApi = {
   get: (id: string) => http.get<JobView>(`/api/v1/jobs/${id}`),
   cancel: (id: string) => http.post<JobView>(`/api/v1/jobs/${id}/cancel`),
-}
-
-export const plazaApi = {
-  feed: (tab: string, q = '') =>
-    http.get<{ items: WorkCard[]; next_cursor: string | null }>(
-      `/api/v1/plaza/feed?tab=${encodeURIComponent(tab)}&q=${encodeURIComponent(q)}&limit=20`,
-    ),
-  detail: (id: string) => http.get<WorkCard>(`/api/v1/plaza/works/${id}`),
-  like: (id: string) => http.post<{ liked: boolean; like_count: number }>(`/api/v1/plaza/works/${id}/like`),
-  favorite: (id: string) =>
-    http.post<{ favorited: boolean; favorite_count: number }>(`/api/v1/plaza/works/${id}/favorite`),
-  comments: (id: string) => http.get<{ items: CommentItem[] }>(`/api/v1/plaza/works/${id}/comments`),
-  addComment: (id: string, content: string) =>
-    http.post<CommentItem>(`/api/v1/plaza/works/${id}/comments`, { content }),
 }
 
 export function errorOf(e: unknown): ApiError {

@@ -58,14 +58,11 @@ async function rename() {
 async function remove() {
   if (!draft.value || !owned.value) return
   const current = draft.value
-  const content = current.work_id
-    ? `「${current.title}」已发布到广场。删除后，广场上的对应作品也会一起下架，且无法恢复。`
-    : `删除后无法恢复。确定删除「${current.title}」吗？`
-  const ok = await askConfirm('删除稿件', content)
+  const ok = await askConfirm('删除稿件', `删除后无法恢复。确定删除「${current.title}」吗？`)
   if (!ok) return
   try {
-    const res = await draftsApi.remove(current.id)
-    showTip(res.work_deleted ? '作品也已下架' : '已删除')
+    await draftsApi.remove(current.id)
+    showTip('已删除')
     setTimeout(() => {
       uni.navigateBack({
         fail: () => uni.switchTab({ url: '/pages/library/index' }),
@@ -74,53 +71,6 @@ async function remove() {
   } catch (e) {
     showError(e, '删除失败')
   }
-}
-
-async function publish() {
-  if (!draft.value) return
-  if (draft.value.is_official) {
-    showTip('官方模板不能直接发布')
-    return
-  }
-  if (draft.value.work_id) {
-    uni.navigateTo({ url: `/pages/work/detail?id=${draft.value.work_id}` })
-    return
-  }
-  const current = draft.value.title === '未命名草稿' ? '' : draft.value.title
-  const typed = await askText('发布到广场', current, '给作品起个名字')
-  if (typed === null || !draft.value) return
-  if ([...typed].length > 40) {
-    showError({ message: '稿件名称请控制在 40 字以内' })
-    return
-  }
-  const title = typed
-  const cats = [
-    { id: 'pet', label: '萌宠' },
-    { id: 'food', label: '食物' },
-    { id: 'pixel', label: '像素人' },
-    { id: 'festival', label: '节日' },
-    { id: 'simple', label: '简约' },
-  ]
-  uni.showActionSheet({
-    itemList: cats.map((c) => c.label),
-    success: async (res) => {
-      const category = cats[res.tapIndex]?.id
-      if (!category || !draft.value) return
-      try {
-        const work = await draftsApi.publish(draft.value.id, {
-          category,
-          caption: '从稿件库发布',
-          title: title || undefined,
-        })
-        draft.value.work_id = work.id
-        if (title) draft.value.title = work.title
-        showTip('已发布到广场')
-        uni.navigateTo({ url: `/pages/work/detail?id=${work.id}` })
-      } catch (e) {
-        showError(e, '发布失败')
-      }
-    },
-  })
 }
 
 function exportImage() {
@@ -159,7 +109,7 @@ function nextBead() {
       <view>
         <text class="title">{{ draft.title }}</text>
         <text v-if="owned" class="rename" @click="rename">改名</text>
-        <text class="sub">{{ timeAgo(draft.created_at) }} · {{ draft.author_nickname }} · {{ draft.work_id ? '已发布' : '未发布到广场' }}</text>
+        <text class="sub">{{ timeAgo(draft.created_at) }} · {{ boardLabel(draft.board_size, draft.color_count) }}</text>
       </view>
       <text class="fav" @click="toggleFav">{{ draft.favorited ? '♥' : '♡' }}</text>
     </view>
@@ -198,7 +148,6 @@ function nextBead() {
     <view v-if="owned && draft.source_key" class="again" @click="again">再次出稿</view>
     <view class="actions">
       <view class="btn ghost" @click="exportImage">导出</view>
-      <view class="btn soft" @click="publish">{{ draft.work_id ? '看作品' : '发布' }}</view>
       <view class="btn primary" @click="crafting = true">开拼</view>
     </view>
     <text v-if="owned" class="danger" @click="remove">删除稿件</text>

@@ -30,8 +30,8 @@ function goLibrary(tab: string) {
   library.open(tab)
   uni.switchTab({ url: '/pages/library/index' })
 }
-function openWork(id: string) {
-  uni.navigateTo({ url: `/pages/work/detail?id=${id}` })
+function openDraft(id: string) {
+  uni.navigateTo({ url: `/pages/draft/detail?id=${id}` })
 }
 function goCreate() {
   uni.switchTab({ url: '/pages/create/index' })
@@ -93,7 +93,6 @@ function rename() {
 
     <view v-if="user.profile" class="stats">
       <view class="s"><text class="n">{{ user.profile.stats.drafts }}</text><text>稿件</text></view>
-      <view class="s"><text class="n">{{ user.profile.stats.works }}</text><text>作品</text></view>
       <view class="s"><text class="n">{{ user.profile.stats.favorites }}</text><text>收藏</text></view>
     </view>
 
@@ -125,15 +124,15 @@ function rename() {
       <view class="item" @click="goLogin">{{ user.isLoggedIn ? '切换账号 / 登录' : '登录' }}<text class="arrow">›</text></view>
     </view>
 
-    <view class="sec-title"><text>最近作品</text></view>
-    <view v-if="user.profile?.recent_works.length" class="works">
-      <view v-for="item in user.profile.recent_works.slice(0, 2)" :key="item.id" class="work" @click="openWork(item.id)">
+    <view class="sec-title"><text>最近稿件</text></view>
+    <view v-if="user.profile?.recent_drafts.length" class="works">
+      <view v-for="item in user.profile.recent_drafts.slice(0, 2)" :key="item.id" class="work" @click="openDraft(item.id)">
         <image class="thumb" :src="item.preview_url" mode="aspectFill" />
         <text class="wname">{{ item.title }}</text>
       </view>
-      <view class="work add" @click="goCreate">＋ 发布</view>
+      <view class="work add" @click="goCreate">去出稿</view>
     </view>
-    <view v-else class="empty">发布到广场的作品会出现在这里</view>
+    <view v-else class="empty">出稿后，最近的稿会出现在这里</view>
 </view>
 </template>
 

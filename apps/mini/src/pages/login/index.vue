@@ -20,8 +20,8 @@ async function wxLogin() {
   }
 }
 
-function guest() {
-  uni.switchTab({ url: '/pages/plaza/index' })
+function browse() {
+  uni.switchTab({ url: '/pages/tutorials/index' })
 }
 function showLegal() {
   uni.showToast({ title: '协议页即将开放', icon: 'none' })
@@ -36,12 +36,12 @@ function showLegal() {
 
     <view class="feats">
       <view class="feat"><text class="fico">📷</text><view><text class="ft">一键出稿</text><text class="fs">拍照 / 相册 → 珠板色号图</text></view></view>
-      <view class="feat"><text class="fico">▦</text><view><text class="ft">广场灵感</text><text class="fs">照着做热门作品，少踩坑</text></view></view>
+      <view class="feat"><text class="fico">▦</text><view><text class="ft">官方教程</text><text class="fs">珠板、色号和烫豆，按步骤看</text></view></view>
       <view class="feat"><text class="fico">🎨</text><view><text class="ft">稿件库</text><text class="fs">模板、收藏、用豆清单随身带</text></view></view>
     </view>
 
     <view class="btn primary" @click="wxLogin">微信一键登录</view>
-    <view class="btn ghost" @click="guest">先逛逛广场</view>
+    <view class="btn ghost" @click="browse">先看教程</view>
     <text class="legal" @click="showLegal">登录即表示同意《用户协议》与《隐私政策》</text>
   </view>
 </template>

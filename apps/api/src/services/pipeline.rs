@@ -855,6 +855,7 @@ fn user_message(err: AppError) -> String {
         | AppError::Forbidden(message)
         | AppError::InsufficientCredits(message)
         | AppError::NotFound(message)
+        | AppError::Gone(message)
         | AppError::ServiceUnavailable(message) => message,
         AppError::Conflict { message, .. } => message,
         AppError::Internal(err) => {

@@ -1,4 +1,4 @@
-//! 核心链路：登录、日领幂等、出稿扣分、广场读写。需要本机 PostgreSQL。
+//! 核心链路：登录、日领幂等、出稿扣分。作品发布与广场互动应返回 410。需要本机 PostgreSQL。
 
 use std::io::Cursor;
 
@@ -318,7 +318,7 @@ async fn mvp_auth_credits_generate_plaza() {
     assert_eq!(status, StatusCode::OK, "{fav}");
     assert_eq!(fav["favorited"], true);
 
-    let (status, work) = call(
+    let (status, closed) = call(
         &app,
         "POST",
         &format!("/api/v1/drafts/{draft_id}/publish"),
@@ -326,8 +326,8 @@ async fn mvp_auth_credits_generate_plaza() {
         Some(json!({ "category": "pet", "caption": "测试发布" })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{work}");
-    let work_id = work["id"].as_str().unwrap();
+    assert_eq!(status, StatusCode::GONE, "{closed}");
+    assert_eq!(closed["error"], "gone");
 
     let (status, feed) = call(
         &app,
@@ -337,30 +337,29 @@ async fn mvp_auth_credits_generate_plaza() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{feed}");
-    assert!(feed["items"].as_array().unwrap().len() >= 1);
+    assert_eq!(status, StatusCode::GONE, "{feed}");
+    assert_eq!(feed["error"], "gone");
 
     let (status, liked) = call(
         &app,
         "POST",
-        &format!("/api/v1/plaza/works/{work_id}/like"),
+        "/api/v1/plaza/works/00000000-0000-0000-0000-000000000000/like",
         Some(token),
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{liked}");
-    assert_eq!(liked["liked"], true);
+    assert_eq!(status, StatusCode::GONE, "{liked}");
 
     let (status, comment) = call(
         &app,
         "POST",
-        &format!("/api/v1/plaza/works/{work_id}/comments"),
+        "/api/v1/plaza/works/00000000-0000-0000-0000-000000000000/comments",
         Some(token),
         Some(json!({ "content": "色号清楚，准备开拼" })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{comment}");
-    assert_eq!(comment["content"], "色号清楚，准备开拼");
+    assert_eq!(status, StatusCode::GONE, "{comment}");
+    assert_eq!(comment["error"], "gone");
 
     let (status, ad) = call(&app, "POST", "/api/v1/credits/ad-reward", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{ad}");
@@ -608,29 +607,16 @@ async fn draft_title_rename_and_delete() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{official_del}");
 
-    let (status, work) = call(
+    let (status, closed) = call(
         &app,
         "POST",
         &format!("/api/v1/drafts/{draft_id}/publish"),
         Some(token),
-        Some(json!({ "title": "广场窗边猫", "category": "pet", "caption": "命名发布" })),
+        Some(json!({ "title": "窗边的猫", "category": "pet", "caption": "命名发布" })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{work}");
-    assert_eq!(work["title"], "广场窗边猫");
-    let work_id = work["id"].as_str().unwrap();
-
-    let (status, again) = call(
-        &app,
-        "POST",
-        &format!("/api/v1/drafts/{draft_id}/publish"),
-        Some(token),
-        Some(json!({ "title": "改不了", "category": "pet" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{again}");
-    assert_eq!(again["id"], work_id);
-    assert_eq!(again["title"], "广场窗边猫");
+    assert_eq!(status, StatusCode::GONE, "{closed}");
+    assert_eq!(closed["error"], "gone");
 
     let (status, named_draft) = call(
         &app,
@@ -641,8 +627,8 @@ async fn draft_title_rename_and_delete() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{named_draft}");
-    assert_eq!(named_draft["title"], "广场窗边猫");
-    assert_eq!(named_draft["work_id"], work_id);
+    assert_eq!(named_draft["title"], "窗边的猫");
+    assert!(named_draft["work_id"].is_null());
 
     let (status, removed) = call(
         &app,
@@ -654,7 +640,7 @@ async fn draft_title_rename_and_delete() {
     .await;
     assert_eq!(status, StatusCode::OK, "{removed}");
     assert_eq!(removed["deleted"], true);
-    assert_eq!(removed["work_deleted"], true);
+    assert_eq!(removed["work_deleted"], false);
     let (status, gone_draft) = call(
         &app,
         "GET",
@@ -667,12 +653,12 @@ async fn draft_title_rename_and_delete() {
     let (status, gone_work) = call(
         &app,
         "GET",
-        &format!("/api/v1/plaza/works/{work_id}"),
-        Some(token),
+        "/api/v1/plaza/works/00000000-0000-0000-0000-000000000000",
+        None,
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{gone_work}");
+    assert_eq!(status, StatusCode::GONE, "{gone_work}");
 
     let second = generate_done(
         &app,
@@ -689,18 +675,6 @@ async fn draft_title_rename_and_delete() {
     assert_eq!(second["balance"], 1);
     let second_id = second["draft"]["id"].as_str().unwrap();
 
-    let (status, published) = call(
-        &app,
-        "POST",
-        &format!("/api/v1/drafts/{second_id}/publish"),
-        Some(token),
-        Some(json!({ "category": "simple" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{published}");
-    assert_eq!(published["title"], "第二张");
-    let second_work = published["id"].as_str().unwrap().to_string();
-
     let (status, dropped) = call(
         &app,
         "DELETE",
@@ -710,16 +684,7 @@ async fn draft_title_rename_and_delete() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{dropped}");
-    assert_eq!(dropped["work_deleted"], true);
-    let (status, gone_second) = call(
-        &app,
-        "GET",
-        &format!("/api/v1/plaza/works/{second_work}"),
-        None,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{gone_second}");
+    assert_eq!(dropped["work_deleted"], false);
 
     let builtin = generate_done(
         &app,

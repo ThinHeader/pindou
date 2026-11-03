@@ -5,7 +5,6 @@ pub mod credits;
 pub mod drafts;
 pub mod pipeline;
 pub mod pixel;
-pub mod plaza;
 pub mod seed;
 pub mod storage;
 pub mod vision;

@@ -146,43 +146,11 @@ export interface JobView {
   charged: boolean
 }
 
-export interface Author {
-  id: string
-  nickname: string
-  avatar_url?: string | null
-}
-
-export interface WorkCard {
-  id: string
-  title: string
-  caption: string
-  category: string
-  board_size: number
-  color_count: number
-  peg_count: number
-  preview_url: string
-  like_count: number
-  favorite_count: number
-  comment_count: number
-  liked: boolean
-  favorited: boolean
-  author: Author
-  created_at: string
-}
-
-export interface CommentItem {
-  id: string
-  content: string
-  created_at: string
-  author: Author
-}
-
 export interface MeProfile {
   user: UserInfo
   stats: { drafts: number; works: number; favorites: number }
   credits: CreditsMe
   recent_drafts: DraftCard[]
-  recent_works: WorkCard[]
 }
 
 export interface StoredObject {

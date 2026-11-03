@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 use crate::extract::AuthUser;
-use crate::services::{auth, credits, drafts, plaza};
+use crate::services::{auth, credits, drafts};
 use crate::state::AppState;
 
 use super::auth::user_dto;
@@ -20,7 +20,6 @@ pub struct MeResponse {
     pub stats: StatsDto,
     pub credits: credits::CreditsView,
     pub recent_drafts: Vec<drafts::DraftCard>,
-    pub recent_works: Vec<plaza::WorkCard>,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,7 +70,6 @@ async fn load(state: &AppState, user_id: Uuid) -> AppResult<MeResponse> {
             .await?;
     let recent_drafts = drafts::list(state, user_id, "mine", "").await?;
     let recent_drafts = recent_drafts.into_iter().take(6).collect();
-    let recent_works = plaza::works_by_user(state, user_id).await?;
     Ok(MeResponse {
         user: user_dto(&user),
         stats: StatsDto {
@@ -81,6 +79,5 @@ async fn load(state: &AppState, user_id: Uuid) -> AppResult<MeResponse> {
         },
         credits: credits::view(state, user_id).await?,
         recent_drafts,
-        recent_works,
     })
 }
