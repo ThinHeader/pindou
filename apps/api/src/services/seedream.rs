@@ -124,13 +124,15 @@ pub fn generations_url(base: &str) -> String {
 }
 
 /// 图生图请求体。`size` 固定为方舟的 1K，不写入珠板规格。
+///
+/// Flash（`doubao-seedream-5-0-flash-260915`）不接受 `sequential_image_generation`，
+/// 带上会整单失败。这里不发送任何 `sequential_*` 字段。
 pub fn generation_body(model: &str, image: &str) -> Value {
     json!({
         "model": model,
         "prompt": SEEDREAM_PROMPT,
         "image": image,
         "size": SEEDREAM_IMAGE_SIZE,
-        "sequential_image_generation": "disabled",
         "response_format": "b64_json",
         "watermark": false,
         "stream": false
@@ -487,8 +489,10 @@ mod tests {
         assert_eq!(body["size"], "1K");
         assert_eq!(body["response_format"], "b64_json");
         assert_eq!(body["watermark"], false);
+        assert!(body.get("sequential_image_generation").is_none());
         assert!(SEEDREAM_PROMPT.contains("目标珠板"));
         let text = body.to_string();
+        assert!(!text.contains("sequential_"));
         assert!(!text.contains("52x52"));
         assert!(!text.contains("78x78"));
         assert!(!text.contains("104x104"));
