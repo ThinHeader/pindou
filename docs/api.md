@@ -47,17 +47,18 @@ Base URL（本地）：`http://127.0.0.1:3000`
 - `WX_APPID` 与 `WX_SECRET` 都非空：请求微信 `jscode2session`，用返回的 openid。
 - 否则为开发态：`mock:` 前缀会原样进 openid；其他 code 做稳定哈希。同一 code 永远是同一用户。空 code 返回 400。
 
-### `GET /api/v1/me` · `PUT /api/v1/me`
+### `GET /api/v1/me` · `PUT /api/v1/me` · `POST /api/v1/me/profile`
 
-`PUT` 同样接受 `PATCH`。小程序用 `PUT`（`uni.request` 没有 PATCH）。至少带一项：
+登录页在 `wx.login` 换票之后，用同一次提交写入头像和昵称。两者都只出现在登录响应和 `/me`，用来在「我的」展示当前账号。
 
-```json
-{ "nickname": "豆豆手作", "avatar_key": "uploads/<uuid>.png" }
-```
+`PUT`（也接受 `PATCH`）只改昵称：`{ "nickname": "豆豆手作" }`，1–20 个字。
 
-- `nickname`：1–20 个字，写入「我的」展示名。省略则不改。这个名字只出现在登录响应和 `/me`。
-- `avatar_key`：先 `POST /api/v1/uploads` 上传头像（沿用现有对象存储，返回 `key` / `url` / `etag` / `content_type`），再把 `key` 交到这里。只接受已存在的 `uploads/<uuid>.jpg|jpeg|png|gif`，不接受外部 URL。省略则不改。
-- 响应里的 `user.avatar_url` 是可访问的文件 URL。库里存的是对象键，换 `PUBLIC_BASE_URL` 后下次读取会按新地址拼。头像只出现在登录响应和 `/me`。
+`POST /api/v1/me/profile` 是 `multipart/form-data`：
+
+- `nickname`：可选，1–20 个字。空则不改昵称。
+- `file`：可选，JPG / PNG / GIF。服务写入现有对象存储（与出稿参考图相同的 `key` / `url`），库里只存对象键。
+
+至少带昵称或头像之一。响应里的 `user.avatar_url` 是可访问的文件 URL。换 `PUBLIC_BASE_URL` 后下次读取会按新地址拼。
 
 返回用户、稿件 / 历史作品行 / 收藏计数、积分快照和最近稿件。不再返回作品列表。
 

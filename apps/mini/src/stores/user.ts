@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { authApi, errorOf } from '../api/http'
+import { authApi, errorOf, uploadProfile } from '../api/http'
 import type { MeProfile, UserInfo } from '../api/types'
 
 const TOKEN_KEY = 'pindou_token'
@@ -16,6 +16,8 @@ export const useUserStore = defineStore('user', {
     isLoggedIn: (s) => Boolean(s.token),
     nickname: (s) => s.user?.nickname || '拼豆玩家',
     avatarUrl: (s) => s.user?.avatar_url || '',
+    hasProfile: (s) =>
+      Boolean(s.user?.avatar_url) || Boolean(s.user?.nickname && s.user.nickname !== '拼豆玩家'),
   },
   actions: {
     hydrate() {
@@ -79,8 +81,11 @@ export const useUserStore = defineStore('user', {
         throw e
       }
     },
-    async updateProfile(body: { nickname?: string; avatar_key?: string }) {
-      const profile = await authApi.patchMe(body)
+    async saveProfile(input: { nickname?: string; filePath?: string }) {
+      const nickname = input.nickname?.trim() || ''
+      const profile = input.filePath
+        ? await uploadProfile(input.filePath, nickname)
+        : await authApi.putNickname(nickname)
       this.profile = profile
       this.user = profile.user
       this.persist()

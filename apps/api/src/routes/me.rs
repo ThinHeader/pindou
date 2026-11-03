@@ -1,18 +1,22 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::{Multipart, State},
+    routing::{get, post},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::extract::AuthUser;
 use crate::services::{auth, credits, drafts};
 use crate::state::AppState;
 
 use super::auth::user_dto;
+use super::uploads::save_image;
 
 #[derive(Debug, Deserialize)]
 pub struct PatchMe {
     pub nickname: Option<String>,
-    pub avatar_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,7 +35,9 @@ pub struct StatsDto {
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/me", get(me).put(patch_me).patch(patch_me))
+    Router::new()
+        .route("/me", get(me).put(patch_me).patch(patch_me))
+        .route("/me/profile", post(save_profile))
 }
 
 async fn me(State(state): State<AppState>, auth: AuthUser) -> AppResult<Json<MeResponse>> {
@@ -43,12 +49,56 @@ async fn patch_me(
     auth: AuthUser,
     Json(body): Json<PatchMe>,
 ) -> AppResult<Json<MeResponse>> {
-    auth::update_profile(
+    let nickname = body.nickname.as_deref().unwrap_or("");
+    auth::save_display(&state.db, auth.user_id, Some(nickname), None).await?;
+    Ok(Json(load(&state, auth.user_id).await?))
+}
+
+/// 登录页一次提交头像和昵称。`file` 可选，没有新头像时只改昵称。
+async fn save_profile(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    mut multipart: Multipart,
+) -> AppResult<Json<MeResponse>> {
+    let mut nickname: Option<String> = None;
+    let mut file: Option<Vec<u8>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::BadRequest("上传内容无法解析，请重试".into()))?
+    {
+        match field.name().unwrap_or("") {
+            "nickname" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::BadRequest("昵称无法读取".into()))?;
+                let text = text.trim().to_string();
+                if !text.is_empty() {
+                    nickname = Some(text);
+                }
+            }
+            "file" | "image" => {
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|_| AppError::BadRequest("读取头像失败".into()))?;
+                if !bytes.is_empty() {
+                    file = Some(bytes.to_vec());
+                }
+            }
+            _ => {}
+        }
+    }
+    let avatar_key = match file {
+        Some(bytes) => Some(save_image(&state.storage, &bytes).await?.key),
+        None => None,
+    };
+    auth::save_display(
         &state.db,
-        &state.storage,
         auth.user_id,
-        body.nickname.as_deref(),
-        body.avatar_key.as_deref(),
+        nickname.as_deref(),
+        avatar_key.as_deref(),
     )
     .await?;
     Ok(Json(load(&state, auth.user_id).await?))

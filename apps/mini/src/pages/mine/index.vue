@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
-import { computed, ref } from 'vue'
-import { uploadImage } from '../../api/http'
 import { useCreditsStore } from '../../stores/credits'
 import { useLibraryStore } from '../../stores/library'
 import { useUserStore } from '../../stores/user'
@@ -11,31 +9,11 @@ const user = useUserStore()
 const credits = useCreditsStore()
 const library = useLibraryStore()
 
-const editing = ref(false)
-const saving = ref(false)
-const editorKey = ref(0)
-const draftNickname = ref('')
-const pendingAvatarPath = ref('')
-const localPreview = ref('')
-
-const shownAvatar = computed(() => localPreview.value || user.avatarUrl)
-const showEditor = computed(() => user.isLoggedIn && (editing.value || !user.avatarUrl))
-const saveLabel = computed(() => {
-  if (saving.value) return '保存中'
-  return user.avatarUrl ? '保存' : '完善头像昵称'
-})
-
-function displayDraft(name: string) {
-  if (!user.avatarUrl && name === '拼豆玩家') return ''
-  return name
-}
-
 onShow(async () => {
   if (!user.isLoggedIn) return
   try {
     await user.refreshProfile()
     if (user.profile) credits.apply(user.profile.credits)
-    if (!editing.value) draftNickname.value = displayDraft(user.nickname)
   } catch (e) {
     if (!user.isLoggedIn) return
     showError(e, '资料加载失败')
@@ -79,136 +57,17 @@ async function claim() {
   }
 }
 
-function startEdit() {
-  if (!user.isLoggedIn) {
-    goLogin()
-    return
-  }
-  draftNickname.value = displayDraft(user.nickname)
-  editorKey.value += 1
-  editing.value = true
-}
-
-function cancelEdit() {
-  editing.value = false
-  pendingAvatarPath.value = ''
-  localPreview.value = ''
-  draftNickname.value = displayDraft(user.nickname)
-}
-
-function applyPickedAvatar(path: string) {
-  pendingAvatarPath.value = path
-  localPreview.value = path
-  if (!showEditor.value) startEdit()
-}
-
-function onChooseAvatar(e: unknown) {
-  const path = (e as { detail?: { avatarUrl?: string } }).detail?.avatarUrl?.trim() || ''
-  if (!path) return
-  applyPickedAvatar(path)
-}
-
-function onAvatarTap() {
-  if (!user.isLoggedIn) {
-    goLogin()
-    return
-  }
-  // 微信里用 button open-type="chooseAvatar"。H5 / 开发者工具没有该能力时，用选图走同一套上传。
-  // #ifdef H5
-  uni.chooseImage({
-    count: 1,
-    sizeType: ['compressed'],
-    sourceType: ['album'],
-    success: (res) => {
-      const path = res.tempFilePaths?.[0]
-      if (path) applyPickedAvatar(path)
-    },
-  })
-  // #endif
-}
-
-function onNicknameInput(e: unknown) {
-  const value = (e as { detail?: { value?: string } }).detail?.value
-  if (typeof value === 'string') draftNickname.value = value
-}
-
-async function onSubmit(e: unknown) {
-  if (saving.value) return
-  const fromForm = (e as { detail?: { value?: { nickname?: string } } }).detail?.value?.nickname
-  const nickname = String(typeof fromForm === 'string' ? fromForm : draftNickname.value).trim()
-  if (!nickname) {
-    showTip('请填写昵称')
-    return
-  }
-  if ([...nickname].length > 20) {
-    showTip('昵称需要 1 到 20 个字')
-    return
-  }
-  if (!pendingAvatarPath.value && !user.avatarUrl) {
-    showTip('请选择头像')
-    return
-  }
-  saving.value = true
-  try {
-    const body: { nickname: string; avatar_key?: string } = { nickname }
-    if (pendingAvatarPath.value) {
-      const stored = await uploadImage(pendingAvatarPath.value)
-      body.avatar_key = stored.key
-    }
-    await user.updateProfile(body)
-    pendingAvatarPath.value = ''
-    localPreview.value = ''
-    editing.value = false
-    draftNickname.value = displayDraft(user.nickname)
-    showTip('已更新资料')
-  } catch (err) {
-    showError(err, '保存失败')
-  } finally {
-    saving.value = false
-  }
-}
 </script>
 
 <template>
   <view class="page">
-    <view class="profile">
-      <button
-        v-if="user.isLoggedIn"
-        class="avatar-btn"
-        open-type="chooseAvatar"
-        hover-class="none"
-        @chooseavatar="onChooseAvatar"
-        @click="onAvatarTap"
-      >
-        <image v-if="shownAvatar" class="avatar-img" :src="shownAvatar" mode="aspectFill" />
-        <text v-else class="avatar">{{ initialOf(draftNickname || user.nickname) }}</text>
-      </button>
-      <text v-else class="avatar" @click="goLogin">豆</text>
-
-      <view v-if="!user.isLoggedIn" class="info" @click="goLogin">
-        <text class="name">点击登录</text>
-        <text class="sub">微信一键登录</text>
-      </view>
-      <form v-else-if="showEditor" class="info" @submit="onSubmit">
-        <input
-          :key="editorKey"
-          class="nick"
-          type="nickname"
-          name="nickname"
-          :value="draftNickname"
-          placeholder="点击填写昵称"
-          maxlength="20"
-          @input="onNicknameInput"
-          @blur="onNicknameInput"
-        />
-        <text class="sub">头像和昵称仅用于在「我的」展示当前账号</text>
-        <button class="save" form-type="submit" hover-class="none" :disabled="saving">{{ saveLabel }}</button>
-        <text v-if="user.avatarUrl" class="cancel" @click="cancelEdit">取消</text>
-      </form>
-      <view v-else class="info" @click="startEdit">
-        <text class="name">{{ user.nickname }}</text>
-        <text class="sub">ID {{ user.user?.id.slice(0, 8) }} · 点按可修改</text>
-        <text class="sub">头像和昵称仅在本页展示</text>
+    <view class="profile" @click="user.isLoggedIn ? undefined : goLogin()">
+      <image v-if="user.isLoggedIn && user.avatarUrl" class="avatar-img" :src="user.avatarUrl" mode="aspectFill" />
+      <text v-else class="avatar">{{ initialOf(user.isLoggedIn ? user.nickname : '豆') }}</text>
+      <view class="info">
+        <text class="name">{{ user.isLoggedIn ? user.nickname : '点击登录' }}</text>
+        <text v-if="!user.isLoggedIn" class="sub">微信一键登录</text>
+        <text v-else class="sub">头像和昵称仅在本页展示 · <text class="link" @click.stop="goLogin">{{ user.hasProfile ? '修改' : '去登录页设置' }}</text></text>
       </view>
     </view>
 
@@ -260,31 +119,19 @@ async function onSubmit(e: unknown) {
 <style scoped lang="scss">
 .page { padding: 24rpx 32rpx 140rpx; }
 .profile { display: flex; gap: 20rpx; align-items: center; }
-.avatar-btn {
-  padding: 0; margin: 0; width: 108rpx; height: 108rpx; min-height: 108rpx;
-  border-radius: 32rpx; overflow: hidden; background: transparent; line-height: 108rpx; flex-shrink: 0;
+.avatar, .avatar-img {
+  width: 108rpx; height: 108rpx; border-radius: 32rpx; flex-shrink: 0;
 }
-.avatar-btn::after { border: none; }
 .avatar {
-  width: 108rpx; height: 108rpx; border-radius: 32rpx;
   background: linear-gradient(135deg, $brand, $warm); color: #fff;
   font-size: 44rpx; font-weight: 800; text-align: center; line-height: 108rpx;
   display: block;
 }
-.avatar-img { width: 108rpx; height: 108rpx; display: block; }
+.avatar-img { display: block; }
 .info { flex: 1; min-width: 0; }
 .name { display: block; font-size: 36rpx; font-weight: 800; }
-.nick {
-  height: 72rpx; font-size: 32rpx; font-weight: 800; color: $ink;
-  background: $card; border: 1rpx solid $line; border-radius: 16rpx; padding: 0 16rpx;
-}
 .sub { display: block; margin-top: 6rpx; color: $ink-3; font-size: 24rpx; }
-.save {
-  margin: 16rpx 0 0; background: $brand; color: #fff; border-radius: 999rpx;
-  font-size: 26rpx; font-weight: 750; line-height: 2.2;
-}
-.save::after { border: none; }
-.cancel { display: inline-block; margin-top: 12rpx; color: $ink-3; font-size: 24rpx; }
+.link { color: $brand; font-weight: 700; }
 .stats {
   display: flex; margin-top: 24rpx; background: $card; border-radius: 24rpx; border: 1rpx solid $line;
 }

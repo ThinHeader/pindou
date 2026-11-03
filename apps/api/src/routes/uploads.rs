@@ -21,7 +21,6 @@ async fn upload(
     _auth: AuthUser,
     mut multipart: Multipart,
 ) -> AppResult<Json<StoredObject>> {
-    let mut saved: Option<StoredObject> = None;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -35,28 +34,33 @@ async fn upload(
             .bytes()
             .await
             .map_err(|_| AppError::BadRequest("读取上传文件失败".into()))?;
-        if bytes.is_empty() {
-            return Err(AppError::BadRequest("请先选择图片".into()));
-        }
-        let format = image::guess_format(&bytes)
-            .map_err(|_| AppError::BadRequest("无法解析图片，请上传 JPG 或 PNG".into()))?;
-        image::load_from_memory(&bytes)
-            .map_err(|_| AppError::BadRequest("无法解析图片，请上传 JPG 或 PNG".into()))?;
-        let (ext, content_type) = match format {
-            image::ImageFormat::Jpeg => ("jpg", "image/jpeg"),
-            image::ImageFormat::Png => ("png", "image/png"),
-            image::ImageFormat::Gif => ("gif", "image/gif"),
-            _ => {
-                return Err(AppError::BadRequest(
-                    "无法解析图片，请上传 JPG 或 PNG".into(),
-                ))
-            }
-        };
-        let key = format!("uploads/{}.{}", Uuid::new_v4(), ext);
-        saved = Some(state.storage.put_object(&key, &bytes, content_type).await?);
-        break;
+        return Ok(Json(save_image(&state.storage, &bytes).await?));
     }
-    saved
-        .ok_or_else(|| AppError::BadRequest("请使用 file 字段上传图片".into()))
-        .map(Json)
+    Err(AppError::BadRequest("请使用 file 字段上传图片".into()))
+}
+
+/// 把一张图片写入现有对象存储。出稿参考图和登录头像共用这一处。
+pub async fn save_image(
+    storage: &crate::services::storage::LocalStorage,
+    bytes: &[u8],
+) -> AppResult<StoredObject> {
+    if bytes.is_empty() {
+        return Err(AppError::BadRequest("请先选择图片".into()));
+    }
+    let format = image::guess_format(bytes)
+        .map_err(|_| AppError::BadRequest("无法解析图片，请上传 JPG 或 PNG".into()))?;
+    image::load_from_memory(bytes)
+        .map_err(|_| AppError::BadRequest("无法解析图片，请上传 JPG 或 PNG".into()))?;
+    let (ext, content_type) = match format {
+        image::ImageFormat::Jpeg => ("jpg", "image/jpeg"),
+        image::ImageFormat::Png => ("png", "image/png"),
+        image::ImageFormat::Gif => ("gif", "image/gif"),
+        _ => {
+            return Err(AppError::BadRequest(
+                "无法解析图片，请上传 JPG 或 PNG".into(),
+            ))
+        }
+    };
+    let key = format!("uploads/{}.{}", Uuid::new_v4(), ext);
+    storage.put_object(&key, bytes, content_type).await
 }

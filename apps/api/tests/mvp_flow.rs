@@ -858,20 +858,31 @@ async fn mvp_plus_mock_pipeline_tags_and_skip_matting() {
     assert_eq!(kept["charged"], true);
 }
 
-async fn upload_png(app: &axum::Router, token: &str) -> (StatusCode, Value) {
+async fn post_profile(
+    app: &axum::Router,
+    token: &str,
+    nickname: &str,
+    png: &[u8],
+) -> (StatusCode, Value) {
     let boundary = "----pindouprofile";
     let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"nickname\"\r\n\r\n{nickname}\r\n"
+        )
+        .as_bytes(),
+    );
     body.extend_from_slice(
         format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n"
         )
         .as_bytes(),
     );
-    body.extend_from_slice(&png_bytes());
+    body.extend_from_slice(png);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/uploads")
+        .uri("/api/v1/me/profile")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(
             header::CONTENT_TYPE,
@@ -917,43 +928,14 @@ async fn profile_avatar_and_nickname_roundtrip() {
     let (status, empty) = call(&app, "PUT", "/api/v1/me", Some(token), Some(json!({}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{empty}");
 
-    let (status, remote) = call(
-        &app,
-        "PUT",
-        "/api/v1/me",
-        Some(token),
-        Some(json!({ "avatar_key": "https://evil.test/a.png" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{remote}");
-
-    let missing_key = format!("uploads/{}.png", Uuid::new_v4());
-    let (status, missing) = call(
-        &app,
-        "PUT",
-        "/api/v1/me",
-        Some(token),
-        Some(json!({ "avatar_key": missing_key })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{missing}");
-
-    let (status, uploaded) = upload_png(&app, token).await;
-    assert_eq!(status, StatusCode::OK, "{uploaded}");
-    let key = uploaded["key"].as_str().expect("upload key").to_string();
-
-    let (status, patched) = call(
-        &app,
-        "PUT",
-        "/api/v1/me",
-        Some(token),
-        Some(json!({ "nickname": "豆豆手作", "avatar_key": key })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{patched}");
-    assert_eq!(patched["user"]["nickname"], "豆豆手作");
-    let avatar = patched["user"]["avatar_url"].as_str().expect("avatar url");
-    assert!(avatar.contains(&key), "{avatar}");
+    let (status, saved) = post_profile(&app, token, "豆豆手作", &png_bytes()).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["user"]["nickname"], "豆豆手作");
+    let avatar = saved["user"]["avatar_url"]
+        .as_str()
+        .expect("avatar url")
+        .to_string();
+    assert!(avatar.contains("/files/uploads/"), "{avatar}");
     assert!(avatar.starts_with("http"), "{avatar}");
 
     let (status, me) = call(&app, "GET", "/api/v1/me", Some(token), None).await;

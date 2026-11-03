@@ -99,11 +99,41 @@ export function uploadImage(filePath: string): Promise<StoredObject> {
   })
 }
 
+export function uploadProfile(filePath: string, nickname: string): Promise<MeProfile> {
+  return new Promise((resolve, reject) => {
+    uni.uploadFile({
+      url: `${API_BASE}/api/v1/me/profile`,
+      filePath,
+      name: 'file',
+      formData: nickname ? { nickname } : {},
+      header: authHeader(),
+      success: (res) => {
+        let data: MeProfile & ApiError
+        try {
+          data = typeof res.data === 'string' ? JSON.parse(res.data) : (res.data as MeProfile & ApiError)
+        } catch {
+          reject({ message: '资料响应无法解析' } satisfies ApiError)
+          return
+        }
+        if (res.statusCode >= 200 && res.statusCode < 300 && data.user) {
+          resolve(data)
+          return
+        }
+        reject({
+          statusCode: res.statusCode,
+          error: data.error,
+          message: data.message || '保存失败',
+        } satisfies ApiError)
+      },
+      fail: () => reject({ message: '保存失败，请重试' } satisfies ApiError),
+    })
+  })
+}
+
 export const authApi = {
   wxLogin: (code: string) => http.post<LoginResult>('/api/v1/auth/wx-login', { code }),
   me: () => http.get<MeProfile>('/api/v1/me'),
-  patchMe: (body: { nickname?: string; avatar_key?: string }) =>
-    http.put<MeProfile>('/api/v1/me', body),
+  putNickname: (nickname: string) => http.put<MeProfile>('/api/v1/me', { nickname }),
 }
 
 export const creditsApi = {
