@@ -2,6 +2,7 @@ import type {
   ApiError,
   CreditOrder,
   CreditPack,
+  VirtualPayParams,
   WxPayParams,
   CreditsMe,
   CreditsMutation,
@@ -120,6 +121,80 @@ export const creditsApi = {
     http.post<{ order: CreditOrder; balance: number; delta: number }>(
       `/api/v1/credits/orders/${orderId}/mock-callback`,
     ),
+}
+
+interface WxMini {
+  requestVirtualPayment?: (options: {
+    signData: string
+    paySig: string
+    signature: string
+    mode: string
+    success?: () => void
+    fail?: (err: { errMsg?: string; errCode?: number }) => void
+  }) => void
+  canIUse?: (schema: string) => boolean
+}
+
+function wxMini(): WxMini | null {
+  if (typeof wx !== 'undefined' && wx) return wx
+  const holder = globalThis as typeof globalThis & { wx?: WxMini }
+  return holder.wx ?? null
+}
+
+function compareVersion(left: string, right: string): number {
+  const a = left.split('.')
+  const b = right.split('.')
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i += 1) {
+    const na = Number.parseInt(a[i] || '0', 10)
+    const nb = Number.parseInt(b[i] || '0', 10)
+    if (na > nb) return 1
+    if (na < nb) return -1
+  }
+  return 0
+}
+
+export function virtualPayUnavailable(signData: string): string | null {
+  let env: number | null = null
+  try {
+    const parsed = JSON.parse(signData) as { env?: unknown }
+    env = typeof parsed.env === 'number' ? parsed.env : null
+  } catch {
+    return '支付参数有误'
+  }
+  let platform = ''
+  let sdk = ''
+  try {
+    const info = uni.getSystemInfoSync() as { platform?: string; SDKVersion?: string }
+    platform = info.platform || ''
+    sdk = info.SDKVersion || ''
+  } catch {
+    platform = ''
+  }
+  if (platform === 'ios' && env === 1) return '苹果设备暂不支持沙箱支付'
+  const wx = wxMini()
+  const supported =
+    (sdk && compareVersion(sdk, '2.19.2') >= 0) || Boolean(wx?.canIUse?.('requestVirtualPayment'))
+  if (!supported || !wx?.requestVirtualPayment) return '请升级微信后再支付'
+  return null
+}
+
+export function requestVirtualPayment(params: VirtualPayParams): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const wx = wxMini()
+    if (!wx?.requestVirtualPayment) {
+      reject({ errMsg: 'requestVirtualPayment:fail unsupported', errCode: -1 })
+      return
+    }
+    wx.requestVirtualPayment({
+      signData: params.signData,
+      paySig: params.paySig,
+      signature: params.signature,
+      mode: params.mode || 'short_series_goods',
+      success: () => resolve(),
+      fail: (err) => reject(err),
+    })
+  })
 }
 
 export function requestWxPayment(params: WxPayParams): Promise<void> {

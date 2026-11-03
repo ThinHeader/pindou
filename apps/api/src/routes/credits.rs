@@ -1,7 +1,7 @@
-//! 积分：查询 / 日领 / 广告 / 充值（开发示意或微信支付 JSAPI）
+//! 积分：查询 / 日领 / 广告 / 充值（开发示意、虚拟支付或微信支付 JSAPI）
 
 use axum::body::Bytes;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::{
     extract::{Path, Query, State},
     response::{IntoResponse, Response},
@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::extract::AuthUser;
 use crate::services::credits::{self, CreditMutation, CreditsView, LedgerItem, OrderView, Pack};
+use crate::services::virtual_pay::{self, ParsedPush, VirtualMode};
 use crate::services::wechat_pay::{self, NotifyHeaders};
 use crate::state::AppState;
 
@@ -35,6 +36,15 @@ pub struct PayResponse {
     pub delta: i32,
 }
 
+#[derive(Debug, Deserialize)]
+struct VirtualPushQuery {
+    signature: Option<String>,
+    timestamp: Option<String>,
+    nonce: Option<String>,
+    echostr: Option<String>,
+    encrypt_type: Option<String>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/credits/me", get(me))
@@ -46,6 +56,10 @@ pub fn router() -> Router<AppState> {
         .route("/credits/orders/{id}", get(get_order))
         .route("/credits/orders/{id}/mock-callback", post(mock_callback))
         .route("/pay/wechat/notify", post(wechat_notify))
+        .route(
+            "/pay/virtual/notify",
+            get(virtual_notify_verify).post(virtual_notify),
+        )
 }
 
 async fn me(State(state): State<AppState>, auth: AuthUser) -> AppResult<Json<CreditsView>> {
@@ -174,6 +188,140 @@ fn notify_ok() -> Response {
 fn notify_fail(status: StatusCode, message: &str) -> Response {
     tracing::warn!(%status, %message, "wechat notify rejected");
     (status, Json(json!({"code": "FAIL", "message": message}))).into_response()
+}
+
+/// 小程序消息推送 URL 校验。Token 与 `WX_VIRTUAL_MSG_TOKEN` 一致时回显 echostr。
+async fn virtual_notify_verify(
+    State(state): State<AppState>,
+    Query(query): Query<VirtualPushQuery>,
+) -> Response {
+    let VirtualMode::Live(creds) = virtual_pay::virtual_mode(&state.config) else {
+        return virtual_text(StatusCode::SERVICE_UNAVAILABLE, "虚拟支付未启用");
+    };
+    if creds.msg_token.is_empty() {
+        return virtual_text(StatusCode::SERVICE_UNAVAILABLE, "未配置消息推送 Token");
+    }
+    if query
+        .encrypt_type
+        .as_deref()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("aes"))
+    {
+        return virtual_text(StatusCode::BAD_REQUEST, "请使用明文模式");
+    }
+    let (Some(signature), Some(timestamp), Some(nonce), Some(echostr)) = (
+        query.signature.as_deref(),
+        query.timestamp.as_deref(),
+        query.nonce.as_deref(),
+        query.echostr.as_deref(),
+    ) else {
+        return virtual_text(StatusCode::UNAUTHORIZED, "签名参数缺失");
+    };
+    if echostr.len() > 128 || echostr.chars().any(|c| c.is_control()) {
+        return virtual_text(StatusCode::BAD_REQUEST, "echostr 无效");
+    }
+    if !virtual_pay::message_signature_matches(&creds.msg_token, timestamp, nonce, signature) {
+        return virtual_text(StatusCode::UNAUTHORIZED, "签名错误");
+    }
+    virtual_text(StatusCode::OK, echostr)
+}
+
+/// 道具发货推送。返回 `ErrCode=0` 后微信不再重试。未确认支付时返回非 0，让微信重试。
+async fn virtual_notify(
+    State(state): State<AppState>,
+    Query(query): Query<VirtualPushQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let xml = virtual_wants_xml(headers.get(header::CONTENT_TYPE), &body);
+    let VirtualMode::Live(creds) = virtual_pay::virtual_mode(&state.config) else {
+        return virtual_result(xml, 1, "虚拟支付未启用");
+    };
+    if query
+        .encrypt_type
+        .as_deref()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("aes"))
+    {
+        return virtual_result(xml, 1, "请使用明文 JSON");
+    }
+    let signature_verified = if creds.msg_token.is_empty() {
+        false
+    } else {
+        let Some(signature) = query.signature.as_deref() else {
+            return virtual_result(xml, 1, "缺少签名");
+        };
+        let Some(timestamp) = query.timestamp.as_deref() else {
+            return virtual_result(xml, 1, "缺少时间戳");
+        };
+        let Some(nonce) = query.nonce.as_deref() else {
+            return virtual_result(xml, 1, "缺少随机串");
+        };
+        if !virtual_pay::message_signature_matches(&creds.msg_token, timestamp, nonce, signature) {
+            tracing::warn!("virtual deliver signature rejected");
+            return virtual_result(xml, 1, "签名错误");
+        }
+        true
+    };
+    let parsed = match virtual_pay::parse_push(&body) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            tracing::warn!(error = %err, "virtual deliver payload rejected");
+            return virtual_result(xml, 1, "推送无法解析");
+        }
+    };
+    match parsed {
+        ParsedPush::Ignored { event } => {
+            tracing::info!(%event, "ignore virtual pay event");
+            virtual_result(xml, 0, "success")
+        }
+        ParsedPush::Deliver(push) => {
+            match credits::accept_virtual_deliver(&state, &push, signature_verified).await {
+                Ok(()) => virtual_result(xml, 0, "success"),
+                Err(err) => {
+                    tracing::warn!(error = %err, out_trade_no = %push.out_trade_no, "virtual deliver failed");
+                    virtual_result(xml, 1, "处理失败")
+                }
+            }
+        }
+    }
+}
+
+fn virtual_wants_xml(content_type: Option<&axum::http::HeaderValue>, body: &[u8]) -> bool {
+    if content_type
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("xml"))
+    {
+        return true;
+    }
+    body.iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| *byte == b'<')
+}
+
+fn virtual_result(xml: bool, code: i32, message: &str) -> Response {
+    if xml {
+        let body =
+            format!("<xml><ErrCode>{code}</ErrCode><ErrMsg><![CDATA[{message}]]></ErrMsg></xml>");
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
+            body,
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        Json(json!({"ErrCode": code, "ErrMsg": message})),
+    )
+        .into_response()
+}
+
+fn virtual_text(status: StatusCode, body: &str) -> Response {
+    (
+        status,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        body.to_string(),
+    )
+        .into_response()
 }
 
 fn notify_error(err: AppError) -> Response {

@@ -24,7 +24,7 @@ docs/api.md                 # 接口说明
 | 每日领取 | +3（东八区每天一次，PostgreSQL `daily_claims` 幂等） |
 | 成功出稿 | −1（整条 MVP+：Seedream 出稿 + 拼豆，只扣一次；失败或取消不扣，也不退款） |
 | 激励广告 | +1 |
-| 充值 | 10 / ¥6，35 / ¥18，60 / ¥30。未配商户参数时开发示意到账；配齐后走微信支付 JSAPI，验签成功才入账一次 |
+| 充值 | 10 / ¥6，35 / ¥18，60 / ¥30。虚拟支付、商户 JSAPI、开发示意三者择一，都只入账一次 |
 
 ## 1. 起数据库
 
@@ -59,7 +59,38 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/wx-login \
 
 把返回的 `token` 放到后面的 `Authorization: Bearer`。
 
-微信真登录：在 `.env` 填 `WX_APPID` 和 `WX_SECRET`。留空则走开发态，同一 `code` 对应同一用户，不会请求微信。支付要用这个登录拿到的 `openid`，所以 AppID 必须和小程序、商户号是一套。
+微信真登录：在 `.env` 填 `WX_APPID` 和 `WX_SECRET`。留空则走开发态，同一 `code` 对应同一用户，不会请求微信。支付要用这个登录拿到的 `openid`。虚拟支付还要服务端保存的 `session_key`，所以必须先走一次微信登录；`session_key` 只以密文落库，不会返回给小程序。
+
+## 虚拟支付（积分充值，优先）
+
+个人主体小程序如果不能走商户号 JSAPI，可以用小程序虚拟支付（米大师道具直购）。配置了 `WX_VIRTUAL_OFFER_ID` 和对应环境的 AppKey 之后，`POST /api/v1/credits/orders` 返回 `virtual_payment`，小程序调用 `wx.requestVirtualPayment`。商户 JSAPI 代码仍保留：虚拟支付未配置时，行为与以前相同。
+
+`GET /api/v1/credits/packs` 的 `pay_mode`：
+
+| 值 | 含义 |
+|----|------|
+| `virtual` | 虚拟支付已启用 |
+| `wechat` | 未启用虚拟支付，商户 JSAPI 已启用 |
+| `mock` | 两者都没配。开发示意到账 |
+| `misconfigured` | 虚拟支付或商户参数只写了一部分。示意到账关闭，下单 503 |
+
+环境：
+
+- 默认沙箱。`WX_VIRTUAL_ENV` 留空或 `1` 时，`signData.env` 为 `1`，AppKey 用 `WX_VIRTUAL_APPKEY_SANDBOX`。沙箱只对开发版、体验版生效，正式版会失败。
+- 现网必须显式 `WX_VIRTUAL_ENV=0`，AppKey 用 `WX_VIRTUAL_APPKEY`（或 `WX_VIRTUAL_APPKEY_PROD`，两个都写时必须相同）。只配了现网 AppKey、但没把 env 设为 `0` 时，不会自动切到现网。
+- 苹果支付不支持沙箱。
+
+MP 后台（拼豆手账工坊，AppID `wx809eec952c85b197`）：
+
+1. 开通虚拟支付。个人主体和企业主体的入口可能不同，以控制台实际页面为准。
+2. 基本配置记下 OfferID，填到 `WX_VIRTUAL_OFFER_ID`。沙箱 AppKey 只放到部署环境的 `WX_VIRTUAL_APPKEY_SANDBOX`，不要写进仓库。
+3. 道具管理创建三件道具，道具 ID 用 `small`、`popular`、`large`（或用 `WX_VIRTUAL_PRODUCT_*` 改成你的 ID）。价格分别是 600、1800、3000 分，并且发布到当前 env 对应的版本。道具大约 10 分钟后生效。
+4. 开发管理 → 消息推送：URL 填 `https://你的域名/api/v1/pay/virtual/notify`（也就是 `{PUBLIC_BASE_URL}/api/v1/pay/virtual/notify`），数据格式 JSON，明文模式。Token 与 `WX_VIRTUAL_MSG_TOKEN` 一致。配了 Token 之后，服务会校验签名；推送字段与订单一致时入账。查单失败时，已验签的发货推送仍可入账。
+5. 登录必须配置 `WX_APPID` 和 `WX_SECRET`。每次微信登录都会刷新 `session_key`。用户态签名失败时，小程序会提示重新登录。
+
+支付成功后，微信推送 `xpay_goods_deliver_notify`。服务核对 openid、道具、金额和透传字段，再向微信查单。订单从 `created` 变成 `paid` 时写一条 `recharge` 流水，重复通知不加积分。客户端仍轮询 `GET /api/v1/credits/orders/{id}`；查到已支付会补入账，并调用 `notify_provide_goods` 告诉微信已发货。沙箱如果没有推送，轮询查单仍可以入账。
+
+变量名见 `apps/api/.env.example`。不要提交 AppKey。
 
 ## 微信支付（积分充值）
 
@@ -114,7 +145,7 @@ cd apps/api
 cargo test
 ```
 
-覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、MVP+ 模拟管线（Seedream 风格的透明平涂中间图 / 最近邻色号，成功才扣 1 分）、52 / 78 / 104 都按所选珠板出格、没配方舟密钥时 `seedream` / `ark` / `aliyun` 返回 400 且不扣分、改名删除、作品发布与广场互动返回 410、开发示意充值只入账一次、微信支付验签回调幂等、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数和方舟密钥，避免测试打到真微信或真方舟。支付用例使用本机假微信和测试密钥。
+覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、MVP+ 模拟管线（Seedream 风格的透明平涂中间图 / 最近邻色号，成功才扣 1 分）、52 / 78 / 104 都按所选珠板出格、没配方舟密钥时 `seedream` / `ark` / `aliyun` 返回 400 且不扣分、改名删除、作品发布与广场互动返回 410、开发示意充值只入账一次、微信支付验签回调幂等、虚拟支付签名与查单入账、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数、虚拟支付参数和方舟密钥，避免测试打到真微信或真方舟。支付用例使用本机假微信和测试密钥。
 
 ## 4. 小程序
 

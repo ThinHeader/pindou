@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
-import { creditsApi, requestWxPayment } from '../../api/http'
+import { creditsApi, errorOf, requestVirtualPayment, requestWxPayment, virtualPayUnavailable } from '../../api/http'
 import type { CreditOrder, CreditPack, LedgerItem } from '../../api/types'
 import { useCreditsStore } from '../../stores/credits'
 import { useUserStore } from '../../stores/user'
@@ -19,13 +19,18 @@ const fallback: CreditPack[] = [
   { code: 'large', name: '大包', credits: 60, price_cents: 3000, price_label: '¥30', blurb: '多送 10', popular: false },
 ]
 
-const payMode = ref<'mock' | 'wechat' | 'misconfigured' | 'unknown'>('unknown')
+const payMode = ref<'mock' | 'wechat' | 'virtual' | 'misconfigured' | 'unknown'>('unknown')
 
 async function load() {
   try {
     const data = await creditsApi.packs()
     packs.value = data.items
-    if (data.pay_mode === 'mock' || data.pay_mode === 'wechat' || data.pay_mode === 'misconfigured') {
+    if (
+      data.pay_mode === 'mock' ||
+      data.pay_mode === 'wechat' ||
+      data.pay_mode === 'virtual' ||
+      data.pay_mode === 'misconfigured'
+    ) {
       payMode.value = data.pay_mode
     }
   } catch {
@@ -85,6 +90,30 @@ function payErrText(e: unknown): string {
   return ''
 }
 
+function payErrCode(e: unknown): number | null {
+  if (!e || typeof e !== 'object' || !('errCode' in e)) return null
+  const code = (e as { errCode?: unknown }).errCode
+  if (typeof code === 'number') return code
+  if (typeof code === 'string' && code.trim()) {
+    const parsed = Number(code)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function virtualFailText(e: unknown): string {
+  const code = payErrCode(e)
+  if (code === -2) return '已取消支付'
+  if (code === -15011) return '正式版不能使用沙箱支付'
+  if (code === -15005 || code === -15007) return ''
+  if (code === -15010 || code === -15014 || code === -15018) return '道具未生效，请稍后再试'
+  if (code === -15013) return '价格与道具不一致'
+  const msg = payErrText(e).toLowerCase()
+  if (msg.includes('cancel') || msg.includes('取消')) return '已取消支付'
+  if (msg.includes('unsupported') || msg.includes('不支持')) return '请升级微信后再支付'
+  return '支付未完成，积分不会到账'
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -110,13 +139,52 @@ async function buy(pack: CreditPack) {
     if (order.mock) {
       const ok = await askPay(
         '开发示意充值',
-        `${pack.price_label} · ${pack.credits} 积分\n当前未配置微信支付，确认后直接到账，不会产生真实扣款。`,
+        `${pack.price_label} · ${pack.credits} 积分\n当前未配置支付，确认后直接到账，不会产生真实扣款。`,
         '确认到账',
       )
       if (!ok) return
       const paid = await creditsApi.mockPay(order.order_id)
       credits.balance = paid.balance
       tell(paid.delta > 0 ? `到账 ${paid.delta} 积分` : '订单已支付')
+      await load()
+      return
+    }
+
+    if (order.virtual_payment) {
+      const blocked = virtualPayUnavailable(order.virtual_payment.signData)
+      if (blocked) {
+        tell(blocked)
+        return
+      }
+      const ok = await askPay(
+        '微信支付',
+        `支付 ${pack.price_label}，到账 ${pack.credits} 积分。取消或失败不会加积分。`,
+        '去支付',
+      )
+      if (!ok) return
+      try {
+        await requestVirtualPayment(order.virtual_payment)
+      } catch (e) {
+        const code = payErrCode(e)
+        if (code === -15005 || code === -15007) {
+          try {
+            await user.login()
+            tell('登录已刷新，请再试一次')
+          } catch {
+            tell('登录已过期，请重新登录后再支付')
+          }
+          return
+        }
+        tell(virtualFailText(e))
+        return
+      }
+      const result = await pollOrder(order.order_id)
+      if (result.balance != null) credits.balance = result.balance
+      if (result.status === 'paid') {
+        tell('支付成功，积分已到账')
+      } else {
+        tell('支付已提交，到账可能稍有延迟，请稍后下拉刷新')
+      }
       await load()
       return
     }
@@ -147,7 +215,16 @@ async function buy(pack: CreditPack) {
     }
     await load()
   } catch (e) {
-    showError(e, '下单失败')
+    if ((errorOf(e).message || '').includes('重新登录')) {
+      try {
+        await user.login()
+        tell('登录已刷新，请再试一次')
+      } catch {
+        showError(e, '下单失败')
+      }
+    } else {
+      showError(e, '下单失败')
+    }
   } finally {
     paying.value = false
   }
@@ -198,7 +275,8 @@ async function buy(pack: CreditPack) {
       </view>
     </view>
     <text v-if="payMode === 'mock'" class="legal">积分仅用于出稿，不退不提现。当前是开发示意充值，不会产生真实扣款。</text>
-    <text v-else-if="payMode === 'misconfigured'" class="legal">微信支付配置不完整，暂不能充值。</text>
+    <text v-else-if="payMode === 'misconfigured'" class="legal">支付配置不完整，暂不能充值。</text>
+    <text v-else-if="payMode === 'virtual'" class="legal">积分仅用于出稿，不退不提现。支付成功后到账。</text>
     <text v-else class="legal">积分仅用于出稿，不退不提现。支付由微信支付完成，成功后到账。</text>
 
     <view class="sec-title"><text>积分明细</text></view>

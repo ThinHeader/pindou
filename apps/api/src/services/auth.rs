@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
+use crate::services::session_seal;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -31,9 +32,15 @@ pub struct UserRecord {
     pub avatar_url: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+struct WxLogin {
+    openid: String,
+    session_key: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct WxSessionResp {
     openid: Option<String>,
+    session_key: Option<String>,
     errcode: Option<i32>,
     errmsg: Option<String>,
 }
@@ -67,17 +74,30 @@ pub fn verify_token(secret: &str, token: &str) -> AppResult<Uuid> {
 }
 
 pub async fn login_with_code(config: &Config, pool: &PgPool, code: &str) -> AppResult<UserRecord> {
-    let openid = resolve_openid(config, code).await?;
-    upsert_user(pool, &openid).await
+    let resolved = resolve_login(config, code).await?;
+    let sealed = match resolved.session_key.as_deref() {
+        Some(key) if !key.is_empty() => {
+            Some(session_seal::seal(&config.jwt_secret, key).map_err(|_| {
+                tracing::warn!("seal session key failed");
+                AppError::Internal(anyhow::anyhow!("保存登录态失败"))
+            })?)
+        }
+        _ => None,
+    };
+    let openid = resolved.openid;
+    upsert_user(pool, &openid, sealed.as_deref()).await
 }
 
-pub async fn resolve_openid(config: &Config, code: &str) -> AppResult<String> {
+async fn resolve_login(config: &Config, code: &str) -> AppResult<WxLogin> {
     let code = code.trim();
     if code.is_empty() {
         return Err(AppError::BadRequest("code 不能为空".into()));
     }
     if !config.wechat_configured() {
-        return Ok(mock_openid(code));
+        return Ok(WxLogin {
+            openid: mock_openid(code),
+            session_key: None,
+        });
     }
 
     let client = reqwest::Client::builder()
@@ -94,7 +114,14 @@ pub async fn resolve_openid(config: &Config, code: &str) -> AppResult<String> {
         ])
         .send()
         .await
-        .map_err(|e| AppError::BadRequest(format!("微信登录请求失败：{e}")))?;
+        .map_err(|err| {
+            tracing::warn!(
+                timeout = err.is_timeout(),
+                connect = err.is_connect(),
+                "code2session request failed"
+            );
+            AppError::BadRequest("微信登录请求失败，请稍后再试".into())
+        })?;
 
     let body: WxSessionResp = resp
         .json()
@@ -102,7 +129,10 @@ pub async fn resolve_openid(config: &Config, code: &str) -> AppResult<String> {
         .map_err(|_| AppError::BadRequest("微信登录响应无法解析，请稍后再试".into()))?;
 
     if let Some(openid) = body.openid.filter(|s| !s.is_empty()) {
-        return Ok(openid);
+        return Ok(WxLogin {
+            openid,
+            session_key: body.session_key.filter(|key| !key.is_empty()),
+        });
     }
     let detail = body.errmsg.unwrap_or_else(|| "未知错误".into());
     let code_n = body.errcode.unwrap_or(-1);
@@ -128,16 +158,23 @@ pub fn mock_openid(code: &str) -> String {
     format!("dev:{}", &hex::encode(hasher.finalize())[..32])
 }
 
-pub async fn upsert_user(pool: &PgPool, openid: &str) -> AppResult<UserRecord> {
+pub async fn upsert_user(
+    pool: &PgPool,
+    openid: &str,
+    session_key_enc: Option<&str>,
+) -> AppResult<UserRecord> {
     let row = sqlx::query_as::<_, UserRow>(
         r#"
-        INSERT INTO users (openid, nickname)
-        VALUES ($1, '拼豆玩家')
-        ON CONFLICT (openid) DO UPDATE SET updated_at = now()
+        INSERT INTO users (openid, nickname, wx_session_key_enc)
+        VALUES ($1, '拼豆玩家', $2)
+        ON CONFLICT (openid) DO UPDATE
+        SET updated_at = now(),
+            wx_session_key_enc = COALESCE($2, users.wx_session_key_enc)
         RETURNING id, openid, nickname, avatar_url
         "#,
     )
     .bind(openid)
+    .bind(session_key_enc)
     .fetch_one(pool)
     .await?;
 

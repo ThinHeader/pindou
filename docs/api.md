@@ -120,15 +120,38 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 | 值 | 含义 |
 |----|------|
-| `mock` | 未配置任何微信支付商户参数。可以走示意回调 |
-| `wechat` | 已启用 JSAPI。下单返回调起支付参数 |
-| `misconfigured` | 写了部分商户参数。示意到账关闭，下单 503 |
+| `virtual` | 已启用虚拟支付。下单返回 `virtual_payment`，优先于 JSAPI |
+| `mock` | 未配置虚拟支付，也未配置任何微信支付商户参数。可以走示意回调 |
+| `wechat` | 未启用虚拟支付，已启用 JSAPI。下单返回调起支付参数 |
+| `misconfigured` | 虚拟支付或商户参数只写了一部分。示意到账关闭，下单 503 |
 
 ### `POST /api/v1/credits/orders`
 
 `{ "pack_code": "small" }`。只创建 `status: "created"` 的订单，**不加积分**。
 
-开发示意时 `mock: true`，没有 `pay_params`。
+开发示意时 `mock: true`，没有 `pay_params`，也没有 `virtual_payment`。
+
+虚拟支付时 `mock: false`，并带上小程序 `wx.requestVirtualPayment` 参数。`signData` 是参与签名的原文字符串，客户端不能再 `JSON.stringify` 一次：
+
+```json
+{
+  "order_id": "uuid",
+  "out_trade_no": "32 位商户单号",
+  "amount_fen": 600,
+  "status": "created",
+  "mock": false,
+  "virtual_payment": {
+    "signData": "{\"offerId\":\"...\",\"buyQuantity\":1,\"env\":1,\"currencyType\":\"CNY\",\"productId\":\"small\",\"goodsPrice\":600,\"outTradeNo\":\"...\",\"attach\":\"pack=small&order=...\"}",
+    "paySig": "hex hmac-sha256",
+    "signature": "hex hmac-sha256",
+    "mode": "short_series_goods"
+  }
+}
+```
+
+`paySig` 是 AppKey 对 `requestVirtualPayment&` + `signData` 的 HMAC-SHA256，十六进制。`signature` 是该用户 `session_key` 对同一段 `signData` 的 HMAC-SHA256。响应里没有 AppKey，也没有 `session_key`。没有 `session_key` 时下单返回 401，需要重新微信登录。
+
+道具 ID 默认等于档位 `small` / `popular` / `large`，`goodsPrice` 分别是 600 / 1800 / 3000。MP 道具价格必须一致。
 
 微信支付时 `mock: false`，并带上小程序 `wx.requestPayment` 参数：
 
@@ -153,11 +176,19 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 ### `GET /api/v1/credits/orders/{id}`
 
-订单所属用户查询状态。`paid` 之前不加积分。正式支付且 API 指向 `api.mch.weixin.qq.com` 时，若本地仍是 `created`，会向微信查单；查单响应验签通过且交易成功才补入账。响应带当前 `balance`，方便支付后轮询。
+订单所属用户查询状态。`paid` 之前不加积分。JSAPI 且 API 指向 `api.mch.weixin.qq.com` 时，若本地仍是 `created`，会向微信查单；查单响应验签通过且交易成功才补入账。虚拟支付订单同样会查 `/xpay/query_order`，已支付才补入账，并通知微信已发货。响应带当前 `balance`，方便支付后轮询。
 
 ### `POST /api/v1/credits/orders/{id}/mock-callback`
 
-仅 `pay_mode=mock` 且订单渠道是 `mock` 时入账。重复调用 `delta` 为 0。配置了任一商户参数后返回 403，不加积分。
+仅 `pay_mode=mock` 且订单渠道是 `mock` 时入账。重复调用 `delta` 为 0。配置了任一商户参数或虚拟支付参数后返回 403，不加积分。
+
+### `GET|POST /api/v1/pay/virtual/notify`
+
+虚拟支付道具发货推送，无登录态。地址是 `{PUBLIC_BASE_URL}/api/v1/pay/virtual/notify`。
+
+- GET：用 `WX_VIRTUAL_MSG_TOKEN` 校验消息推送签名后回显 `echostr`。
+- POST：事件 `xpay_goods_deliver_notify`。配了 Token 时先验签。订单、openid、道具、金额、环境一致后，优先查单确认再入账；查单不可用但推送已验签时，按推送入账。重复通知返回 `{"ErrCode":0,"ErrMsg":"success"}`，不加第二次积分。
+- 签名无效或尚未支付：`ErrCode` 非 0，不加积分。退款类事件只确认收到，不扣回积分。
 
 ### `POST /api/v1/pay/wechat/notify`
 
