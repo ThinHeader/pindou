@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::services::pixel;
+use crate::services::seedream;
 use crate::services::storage::{decode_image_base64, normalize_object_key};
-use crate::services::vision;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -90,7 +90,7 @@ pub async fn list(
         r#"
         SELECT d.id, d.user_id, d.title, d.board_size, d.color_count, d.peg_count,
                d.preview_key, d.is_template, d.is_official, d.created_at,
-               d.pipeline, d.remove_bg, d.cartoon_strength, d.subject_type,
+               d.pipeline, d.provider, d.subject_type,
                u.nickname AS author_nickname,
                EXISTS(
                  SELECT 1 FROM draft_favorites f
@@ -422,12 +422,7 @@ fn card_from_row(state: &AppState, viewer: Uuid, row: &DraftListRow) -> DraftCar
         ),
         author_nickname: row.author_nickname.clone(),
         created_at: row.created_at,
-        pipeline_tags: vision::pipeline_tags(
-            &row.pipeline,
-            row.remove_bg,
-            &row.cartoon_strength,
-            &row.subject_type,
-        ),
+        pipeline_tags: seedream::pipeline_tags(&row.pipeline, &row.provider, &row.subject_type),
     }
 }
 
@@ -464,19 +459,13 @@ fn detail_from_row(state: &AppState, viewer: Uuid, row: &DraftDetailRow) -> Draf
         cartoon_strength: row.cartoon_strength.clone(),
         subject_type: row.subject_type.clone(),
         palette_brand: row.palette_brand.clone(),
-        pipeline_tags: vision::pipeline_tags(
-            &row.pipeline,
-            row.remove_bg,
-            &row.cartoon_strength,
-            &row.subject_type,
-        ),
-        pipeline_lines: vision::pipeline_lines(
+        pipeline_tags: seedream::pipeline_tags(&row.pipeline, &row.provider, &row.subject_type),
+        pipeline_lines: seedream::pipeline_lines(
             &row.pipeline,
             &row.provider,
-            row.remove_bg,
-            &row.cartoon_strength,
             &row.palette_pref,
             &row.palette_brand,
+            row.board_size,
         ),
         original_url: row
             .source_key
@@ -522,8 +511,7 @@ struct DraftListRow {
     is_official: bool,
     created_at: DateTime<Utc>,
     pipeline: String,
-    remove_bg: bool,
-    cartoon_strength: String,
+    provider: String,
     subject_type: String,
     author_nickname: String,
     favorited: bool,

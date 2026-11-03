@@ -1,4 +1,7 @@
-//! MVP+ 出稿：上传 → 去背 → 卡通 → 最近邻拼豆量化。
+//! MVP+ 出稿：上传 → 火山方舟 Seedream Flash 图生图 → 最近邻拼豆量化。
+//!
+//! 方舟返回约 1K 平涂图。珠板格数只看用户选择的 52 / 78 / 104，
+//! 不看提示词里的点阵说法，也不把 API 图尺寸当成珠图。
 //!
 //! `POST /drafts/generate` 立刻返回任务，小程序轮询 `GET /jobs/{id}`。
 //! 积分只在整条管线成功、稿件写入的同一事务里扣 1 分。失败或取消不扣，也不退款。
@@ -11,7 +14,7 @@ use crate::error::{AppError, AppResult};
 use crate::services::credits::{self, GENERATE_COST};
 use crate::services::drafts::{self, DraftDetail};
 use crate::services::pixel::{self, Brand, Pref};
-use crate::services::vision::{self, CartoonStrength, SubjectKind, VisionError};
+use crate::services::seedream::{self, SeedreamError, SubjectKind};
 use crate::state::AppState;
 
 #[derive(Debug)]
@@ -70,19 +73,17 @@ struct Fail {
 }
 
 pub async fn enqueue(state: &AppState, user_id: Uuid, input: GenerateInput) -> AppResult<JobView> {
-    if !state.config.use_mock_pipeline() && !state.config.aliyun_ready() {
-        return Err(AppError::BadRequest(
-            "已指定阿里云出稿，但未配置 ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET".into(),
-        ));
-    }
+    let provider = state
+        .config
+        .provider_label()
+        .map_err(|message| AppError::BadRequest(message.to_string()))?;
 
     let board = pixel::parse_board(input.board_size, input.board_label.as_deref())?;
     let color_cap = pixel::parse_color_count(input.color_count)?;
     let pref = Pref::parse(input.palette_pref.as_deref().unwrap_or("auto"))
         .ok_or_else(|| AppError::BadRequest("色系偏好无效".into()))?;
-    let remove_bg = input.remove_bg.unwrap_or(true);
-    let strength = CartoonStrength::parse(input.cartoon_strength.as_deref().unwrap_or("standard"))
-        .ok_or_else(|| AppError::BadRequest("卡通强度无效，请选择轻、标准或强".into()))?;
+    // 去背和卡通强度是旧阿里云参数。仍接收，避免旧客户端直接 400，但不再影响出稿。
+    let _legacy = (&input.remove_bg, &input.cartoon_strength);
     let subject = SubjectKind::parse(input.subject_type.as_deref().unwrap_or("person"))
         .ok_or_else(|| AppError::BadRequest("主体类型无效，请选择人像、宠物或静物".into()))?;
     let brand = Brand::parse(input.palette_brand.as_deref().unwrap_or("generic"))
@@ -107,16 +108,7 @@ pub async fn enqueue(state: &AppState, user_id: Uuid, input: GenerateInput) -> A
 
     let job_id = Uuid::new_v4();
     let (original_key, owned) = persist_original(state, &input, job_id, &bytes).await?;
-    let provider = if state.config.use_mock_pipeline() {
-        "mock"
-    } else {
-        "aliyun"
-    };
-    let (status, progress, message) = if remove_bg {
-        ("matting", 36, "智能去背中")
-    } else {
-        ("cartoon", 60, "卡通处理中")
-    };
+    let (status, progress, message) = ("seedream", 36, "AI 出稿中");
 
     let inserted = sqlx::query(
         r#"
@@ -136,8 +128,8 @@ pub async fn enqueue(state: &AppState, user_id: Uuid, input: GenerateInput) -> A
     .bind(board as i32)
     .bind(color_cap as i32)
     .bind(pref.as_str())
-    .bind(remove_bg)
-    .bind(strength.as_str())
+    .bind(false)
+    .bind("off")
     .bind(subject.as_str())
     .bind(brand.as_str())
     .bind(&title)
@@ -179,7 +171,7 @@ pub async fn cancel(state: &AppState, user_id: Uuid, job_id: Uuid) -> AppResult<
             error_message = '已取消，未扣积分',
             updated_at = now()
         WHERE id = $1 AND user_id = $2
-          AND status IN ('queued', 'upload', 'matting', 'cartoon', 'pixel')
+          AND status IN ('queued', 'upload', 'matting', 'cartoon', 'seedream', 'pixel')
         "#,
     )
     .bind(job_id)
@@ -208,67 +200,43 @@ async fn run_inner(state: &AppState, job_id: Uuid) -> Result<(), Fail> {
         stage: "upload".into(),
         message: "找不到参考图，请重新上传。本次未扣积分。".into(),
     })?;
-    let subject = SubjectKind::parse(&row.subject_type).unwrap_or(SubjectKind::Person);
-    let strength =
-        CartoonStrength::parse(&row.cartoon_strength).unwrap_or(CartoonStrength::Standard);
     let pref = Pref::parse(&row.palette_pref).unwrap_or(Pref::Auto);
     let brand = Brand::parse(&row.palette_brand).unwrap_or(Brand::Generic);
-    let http = if state.config.use_mock_pipeline() {
-        None
-    } else {
-        Some(vision::http_client().map_err(|err| Fail {
-            stage: "matting".into(),
-            message: err.into_message("matting"),
-        })?)
-    };
-    let http_ref = http.as_ref();
-
     let source_bytes = read_object(state, &original_key, "upload").await?;
-    let (cartoon_input, cartoon_url_key) = if row.remove_bg {
-        if !advance(state, job_id, "matting", 42, "智能去背中").await? {
-            return Ok(());
-        }
-        let image_url = state.storage.public_url(&original_key);
-        let client = http_ref.cloned().unwrap_or_else(fallback_client);
-        let matted =
-            vision::run_matting(&client, &state.config, subject, &image_url, &source_bytes)
+
+    if !advance(state, job_id, "seedream", 48, "AI 出稿中").await? {
+        return Ok(());
+    }
+    let stylized = match row.provider.as_str() {
+        "mock" => seedream::mock_stylize(&source_bytes).map_err(|err| fail_vis("seedream", err))?,
+        "seedream" => {
+            let client = seedream::http_client().map_err(|err| Fail {
+                stage: "seedream".into(),
+                message: err.into_message(),
+            })?;
+            let image_url = state.storage.public_url(&original_key);
+            seedream::run_ark(&client, &state.config, &image_url, &source_bytes)
                 .await
-                .map_err(|err| fail_vis("matting", err))?;
-        let key = format!("pipeline/{job_id}/matted.png");
-        put_png(state, &key, &matted, "matting").await?;
-        if !set_key(state, job_id, "matted_key", &key).await? {
-            return Ok(());
+                .map_err(|err| fail_vis("seedream", err))?
         }
-        (matted, key)
-    } else {
-        (source_bytes, original_key.clone())
+        _ => {
+            return Err(Fail {
+                stage: "seedream".into(),
+                message: "这条任务的出稿方式已停用，请重新出稿。本次未扣积分。".into(),
+            });
+        }
     };
-
-    if !advance(state, job_id, "cartoon", 68, "卡通处理中").await? {
-        return Ok(());
-    }
-    let cartoon_url = state.storage.public_url(&cartoon_url_key);
-    let client = http_ref.cloned().unwrap_or_else(fallback_client);
-    let cartoon = vision::run_cartoon(
-        &client,
-        &state.config,
-        strength,
-        &cartoon_url,
-        &cartoon_input,
-    )
-    .await
-    .map_err(|err| fail_vis("cartoon", err))?;
-    let cartoon_key = format!("pipeline/{job_id}/cartoon.png");
-    put_png(state, &cartoon_key, &cartoon, "cartoon").await?;
-    if !set_key(state, job_id, "cartoon_key", &cartoon_key).await? {
+    let stylized_key = format!("pipeline/{job_id}/seedream.png");
+    put_png(state, &stylized_key, &stylized, "seedream").await?;
+    if !set_key(state, job_id, "cartoon_key", &stylized_key).await? {
         return Ok(());
     }
 
-    if !advance(state, job_id, "pixel", 88, "拼豆量化中").await? {
+    if !advance(state, job_id, "pixel", 82, "拼豆像素中").await? {
         return Ok(());
     }
     let pattern = pixel::pixelate_beads(
-        &cartoon,
+        &stylized,
         row.board_size as u32,
         row.color_count as u32,
         pref,
@@ -294,20 +262,14 @@ async fn run_inner(state: &AppState, job_id: Uuid) -> Result<(), Fail> {
         "色号稿已生成（{}×{}，实际 {actual} 色）",
         row.board_size, row.board_size
     );
-    let tags = vision::pipeline_tags(
-        "mvp_plus",
-        row.remove_bg,
-        &row.cartoon_strength,
-        &row.subject_type,
-    );
+    let tags = seedream::pipeline_tags("mvp_plus", &row.provider, &row.subject_type);
     match finish(
         state,
         &row,
         &pattern,
         &original_key,
-        row.remove_bg
-            .then(|| format!("pipeline/{job_id}/matted.png")),
-        &cartoon_key,
+        None,
+        &stylized_key,
         &preview_key,
         &message,
         &tags,
@@ -366,7 +328,7 @@ async fn finish(
     let peg = row.board_size * row.board_size;
     let actual = pattern.palette.len() as i32;
     let tag_value = json!(tags);
-    let matted_saved = if row.remove_bg { matted_key } else { None };
+    let matted_saved = matted_key;
 
     let mut tx = state
         .db
@@ -473,14 +435,6 @@ async fn finish(
 
     tx.commit().await.map_err(|err| db_fail("pixel", err))?;
     Ok(Finish::Done)
-}
-
-fn fallback_client() -> reqwest::Client {
-    // 模拟路径不会发请求，客户端只是占位。
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .expect("http client")
 }
 
 async fn persist_original(
@@ -658,9 +612,8 @@ async fn to_view(state: &AppState, user_id: Uuid, row: &JobRow) -> AppResult<Job
         stages: build_stages(&StageSnap {
             status: row.status.clone(),
             failed_stage: row.failed_stage.clone(),
-            remove_bg: row.remove_bg,
             provider: row.provider.clone(),
-            cartoon_strength: row.cartoon_strength.clone(),
+            board_size: row.board_size,
             error_message: row.error_message.clone(),
         }),
         provider: row.provider.clone(),
@@ -698,22 +651,20 @@ async fn to_view(state: &AppState, user_id: Uuid, row: &JobRow) -> AppResult<Job
 struct StageSnap {
     status: String,
     failed_stage: Option<String>,
-    remove_bg: bool,
     provider: String,
-    cartoon_strength: String,
+    board_size: i32,
     error_message: Option<String>,
 }
 
 fn build_stages(row: &StageSnap) -> Vec<StageView> {
-    const IDS: [(&str, &str); 4] = [
+    const IDS: [(&str, &str); 3] = [
         ("upload", "上传原图"),
-        ("matting", "智能去背"),
-        ("cartoon", "人物动漫化"),
-        ("pixel", "拼豆量化"),
+        ("seedream", "AI 出稿"),
+        ("pixel", "拼豆像素"),
     ];
     let terminal_fail = matches!(row.status.as_str(), "failed" | "cancelled");
     let cursor = if row.status == "done" {
-        4
+        IDS.len()
     } else if terminal_fail {
         row.failed_stage
             .as_deref()
@@ -726,7 +677,7 @@ fn build_stages(row: &StageSnap) -> Vec<StageView> {
     IDS.iter()
         .enumerate()
         .map(|(index, (id, label))| {
-            let mut state = if row.status == "done" {
+            let state = if row.status == "done" {
                 "done"
             } else if terminal_fail {
                 if index < cursor {
@@ -743,9 +694,6 @@ fn build_stages(row: &StageSnap) -> Vec<StageView> {
             } else {
                 "pending"
             };
-            if *id == "matting" && !row.remove_bg && state != "fail" && state != "pending" {
-                state = "skipped";
-            }
             StageView {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
@@ -759,62 +707,46 @@ fn build_stages(row: &StageSnap) -> Vec<StageView> {
 fn stage_index(status: &str) -> Option<usize> {
     match status {
         "queued" | "upload" => Some(0),
-        "matting" => Some(1),
-        "cartoon" => Some(2),
-        "pixel" => Some(3),
+        // 旧任务停在去背或卡通时，进度条落在现在的 AI 出稿这一步。
+        "matting" | "cartoon" | "seedream" => Some(1),
+        "pixel" => Some(2),
         _ => None,
     }
 }
 
 fn stage_detail(id: &str, state: &str, row: &StageSnap, terminal_fail: bool) -> String {
-    let strength = vision::strength_label(&row.cartoon_strength);
-    let aliyun = row.provider == "aliyun";
+    let mock = row.provider == "mock";
+    let board = format!("{}×{}", row.board_size, row.board_size);
     match (id, state) {
         ("upload", "done") => "原图已就绪".into(),
         ("upload", "active") => "正在上传原图".into(),
         ("upload", "fail") => fail_detail(row),
-        ("matting", "skipped") => "已关闭".into(),
-        ("matting", "active") => {
-            if aliyun {
-                "阿里抠图中".into()
+        ("seedream", "active") => {
+            if mock {
+                "开发模拟出稿中".into()
             } else {
-                "开发模拟去背中".into()
+                "Seedream Flash 出稿中".into()
             }
         }
-        ("matting", "done") => {
-            if aliyun {
-                "阿里抠图完成".into()
+        ("seedream", "done") => {
+            if mock {
+                "开发模拟出稿完成".into()
             } else {
-                "开发模拟去背完成".into()
+                "Seedream Flash 出稿完成".into()
             }
         }
-        ("matting", "fail") => fail_detail(row),
-        ("matting", "pending") => {
+        ("seedream", "fail") => fail_detail(row),
+        ("seedream", "pending") => {
             if terminal_fail {
                 "未开始".into()
             } else {
-                "等待去背".into()
+                "等待 AI 出稿".into()
             }
         }
-        ("cartoon", "active") => format!("卡通强度 · {strength}"),
-        ("cartoon", "done") => "完成".into(),
-        ("cartoon", "fail") => fail_detail(row),
-        ("cartoon", "pending") => {
-            if terminal_fail {
-                "未开始".into()
-            } else {
-                "人物动漫化".into()
-            }
-        }
-        ("pixel", "done") => "完成".into(),
+        ("pixel", "done") => format!("完成 · {board}"),
         ("pixel", "fail") => fail_detail(row),
-        ("pixel", _) => {
-            if terminal_fail && state == "pending" {
-                "未开始".into()
-            } else {
-                "自研像素 / 色板映射".into()
-            }
-        }
+        ("pixel", "pending") if terminal_fail => "未开始".into(),
+        ("pixel", _) => format!("最近邻色号 · {board}"),
         _ => String::new(),
     }
 }
@@ -833,10 +765,10 @@ fn is_terminal(status: &str) -> bool {
     matches!(status, "done" | "failed" | "cancelled")
 }
 
-fn fail_vis(stage: &str, err: VisionError) -> Fail {
+fn fail_vis(stage: &str, err: SeedreamError) -> Fail {
     Fail {
         stage: stage.into(),
-        message: err.into_message(stage),
+        message: err.into_message(),
     }
 }
 
@@ -903,14 +835,13 @@ struct JobRow {
 mod tests {
     use super::*;
 
-    fn snap(status: &str, failed: Option<&str>, remove_bg: bool) -> StageSnap {
+    fn snap(status: &str, failed: Option<&str>, board: i32) -> StageSnap {
         StageSnap {
             status: status.into(),
             failed_stage: failed.map(str::to_string),
-            remove_bg,
             provider: "mock".into(),
-            cartoon_strength: "standard".into(),
-            error_message: Some("卡通处理超时了。本次未扣积分。".into()),
+            board_size: board,
+            error_message: Some("AI 出稿超时了。本次未扣积分。".into()),
         }
     }
 
@@ -919,34 +850,36 @@ mod tests {
     }
 
     #[test]
-    fn stages_follow_matting_cartoon_pixel() {
-        let stages = build_stages(&snap("matting", None, true));
-        assert_eq!(states(&stages), ["done", "active", "pending", "pending"]);
-        assert_eq!(stages[1].detail, "开发模拟去背中");
-        assert_eq!(stages[2].detail, "人物动漫化");
+    fn stages_follow_seedream_then_selected_board() {
+        let stages = build_stages(&snap("seedream", None, 78));
+        assert_eq!(states(&stages), ["done", "active", "pending"]);
+        assert_eq!(stages[1].id, "seedream");
+        assert_eq!(stages[1].label, "AI 出稿");
+        assert_eq!(stages[1].detail, "开发模拟出稿中");
+        assert_eq!(stages[2].label, "拼豆像素");
+        assert_eq!(stages[2].detail, "最近邻色号 · 78×78");
     }
 
     #[test]
-    fn skipped_matting_when_background_kept() {
-        let stages = build_stages(&snap("cartoon", None, false));
-        assert_eq!(states(&stages), ["done", "skipped", "active", "pending"]);
-        assert_eq!(stages[1].detail, "已关闭");
-        assert_eq!(stages[2].detail, "卡通强度 · 标准");
+    fn legacy_cartoon_status_lands_on_seedream_step() {
+        let stages = build_stages(&snap("cartoon", None, 52));
+        assert_eq!(states(&stages), ["done", "active", "pending"]);
+        assert_eq!(stages[1].id, "seedream");
     }
 
     #[test]
     fn failure_marks_only_the_broken_stage() {
-        let stages = build_stages(&snap("failed", Some("cartoon"), true));
-        assert_eq!(states(&stages), ["done", "done", "fail", "pending"]);
-        assert!(stages[2].detail.contains("未扣积分"));
-        assert_eq!(stages[3].detail, "未开始");
+        let stages = build_stages(&snap("failed", Some("seedream"), 104));
+        assert_eq!(states(&stages), ["done", "fail", "pending"]);
+        assert!(stages[1].detail.contains("未扣积分"));
+        assert_eq!(stages[2].detail, "未开始");
     }
 
     #[test]
     fn cancel_does_not_look_like_a_charge() {
-        let stages = build_stages(&snap("cancelled", Some("pixel"), true));
-        assert_eq!(stages[3].state, "fail");
-        assert_eq!(stages[3].detail, "已取消，未扣积分");
+        let stages = build_stages(&snap("cancelled", Some("pixel"), 52));
+        assert_eq!(stages[2].state, "fail");
+        assert_eq!(stages[2].detail, "已取消，未扣积分");
         assert_eq!(stages[0].state, "done");
     }
 }

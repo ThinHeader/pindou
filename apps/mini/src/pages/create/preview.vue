@@ -9,11 +9,11 @@ import { boardLabel, showError, showTip } from '../../utils/ui'
 
 const create = useCreateStore()
 const draft = ref<DraftDetail | null>(create.lastDraft)
-const tab = ref<'orig' | 'anime' | 'bead'>('bead')
+const tab = ref<'orig' | 'seedream' | 'bead'>('bead')
 
 const tabs = [
   { id: 'orig' as const, label: '原图' },
-  { id: 'anime' as const, label: '卡通中间态' },
+  { id: 'seedream' as const, label: 'AI 出稿' },
   { id: 'bead' as const, label: '拼豆结果' },
 ]
 
@@ -68,8 +68,8 @@ function saveDraft() {
 
       <image v-if="tab === 'orig'" class="preview photo" :src="draft.original_url || draft.source_url || draft.preview_url" mode="aspectFit" />
       <view v-if="tab === 'orig' && !(draft.original_url || draft.source_url)" class="miss">这张稿没有留下原图</view>
-      <image v-if="tab === 'anime'" class="preview" :src="draft.cartoon_url || draft.preview_url" mode="aspectFit" />
-      <view v-if="tab === 'anime' && !draft.cartoon_url" class="miss">没有卡通中间态</view>
+      <image v-if="tab === 'seedream'" class="preview" :src="draft.cartoon_url || draft.preview_url" mode="aspectFit" />
+      <view v-if="tab === 'seedream' && !draft.cartoon_url" class="miss">没有 AI 出稿中间图</view>
       <image v-if="tab === 'bead'" class="preview" :src="draft.preview_url" mode="aspectFit" />
 
       <view v-if="draft.pipeline_tags?.length" class="tags">

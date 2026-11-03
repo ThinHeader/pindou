@@ -97,8 +97,8 @@ function goLibrary() {
     <view class="pipe">
       <text class="badge">MVP+</text>
       <view>
-        <text class="pipe-h">智能去背+卡通再拼豆</text>
-        <text class="pipe-s">阿里抠图 → 人物动漫化 → 自研像素/色板</text>
+        <text class="pipe-h">AI 出稿再拼豆</text>
+        <text class="pipe-s">Seedream Flash → 自研像素 / 色板</text>
       </view>
     </view>
     <text class="lead">选择一张照片，人像 / 宠物 / 静物都行</text>
@@ -112,10 +112,10 @@ function goLibrary() {
         <view class="btn ghost" @click="pick('album')">从相册选择</view>
       </view>
       <view class="sample" @click="useSample">没有照片？用示例图试试</view>
-      <text class="tip">一次出稿扣 1 积分 · 含去背、卡通与拼豆量化</text>
+      <text class="tip">一次出稿扣 1 积分 · 含 AI 出稿与拼豆像素</text>
     </view>
     <view class="mini-pipe">
-      <text>① 去背</text><text class="sep">→</text><text>② 卡通</text><text class="sep">→</text><text>③ 拼豆</text>
+      <text>① 上传</text><text class="sep">→</text><text>② AI 出稿</text><text class="sep">→</text><text>③ 拼豆</text>
     </view>
 
     <view class="sec-title">
@@ -132,9 +132,9 @@ function goLibrary() {
 
     <view class="sec-title"><text>出稿小贴士</text></view>
     <view class="tips">
-      <text>· 默认智能去背，杂乱背景也能干净出稿</text>
-      <text>· 卡通强度可调：标准更像拼豆插画</text>
-      <text>· 52×52 约 13.5cm · 新手友好</text>
+      <text>· Seedream 负责平涂出稿，不必先自己抠图</text>
+      <text>· 主体清楚、少杂物的照片更稳</text>
+      <text>· 珠板可选 52 / 78 / 104，色号按所选规格生成</text>
     </view>
     <CreditEmptySheet />
   </view>

@@ -14,17 +14,15 @@ pub struct Config {
     pub storage_dir: String,
     /// 对外访问文件的基址，如 http://127.0.0.1:3000
     pub public_base_url: String,
-    /// 阿里云 AccessKey。留空则 MVP+ 走开发模拟（不请求 VIAPI）。
-    pub aliyun_access_key_id: String,
-    pub aliyun_access_key_secret: String,
-    /// 视觉智能区域，默认 cn-shanghai。
-    pub aliyun_region: String,
-    /// `auto`（有密钥走阿里云，否则模拟）/ `mock` / `aliyun`。
+    /// 火山方舟 API Key。留空且 `PIPELINE_PROVIDER=auto` 时走开发模拟。
+    /// 不是阿里云 AccessKey，也不是视觉智能密钥。
+    pub ark_api_key: String,
+    /// 方舟 OpenAPI 根地址，默认 https://ark.cn-beijing.volces.com。
+    pub ark_base_url: String,
+    /// 默认 `doubao-seedream-5-0-flash-260915`。
+    pub ark_model: String,
+    /// `auto`（有方舟密钥走 Seedream，否则模拟）/ `mock` / `seedream` / `ark`。
     pub pipeline_provider: String,
-    /// 可选，覆盖 imageseg 主机名，不含协议。
-    pub aliyun_imageseg_endpoint: String,
-    /// 可选，覆盖 imageenhan 主机名，不含协议。
-    pub aliyun_imageenhan_endpoint: String,
     /// 小程序 AppID。留空时回落到 `WX_APPID`（登录和支付必须是同一个小程序）。
     pub wechat_app_id: String,
     pub wechat_mch_id: String,
@@ -57,22 +55,10 @@ impl std::fmt::Debug for Config {
             .field("wx_secret", &"(redacted)")
             .field("storage_dir", &self.storage_dir)
             .field("public_base_url", &self.public_base_url)
-            .field("aliyun_region", &self.aliyun_region)
             .field("pipeline_provider", &self.pipeline_provider)
-            .field(
-                "aliyun_access_key_id",
-                &if self.aliyun_access_key_id.trim().is_empty() {
-                    "(empty)"
-                } else {
-                    "(set)"
-                },
-            )
-            .field("aliyun_access_key_secret", &"(redacted)")
-            .field("aliyun_imageseg_endpoint", &self.aliyun_imageseg_endpoint)
-            .field(
-                "aliyun_imageenhan_endpoint",
-                &self.aliyun_imageenhan_endpoint,
-            )
+            .field("ark_api_key", &redact_set(&self.ark_api_key))
+            .field("ark_base_url", &self.ark_base_url())
+            .field("ark_model", &self.ark_model())
             .field("wechat_app_id", &self.mini_app_id())
             .field("wechat_mch_id", &self.wechat_mch_id)
             .field("wechat_mch_serial_no", &self.wechat_mch_serial_no)
@@ -119,12 +105,10 @@ impl Config {
             storage_dir: env::var("STORAGE_DIR").unwrap_or_else(|_| "./data/objects".into()),
             public_base_url: env::var("PUBLIC_BASE_URL")
                 .unwrap_or_else(|_| format!("http://127.0.0.1:{port}")),
-            aliyun_access_key_id: env::var("ALIYUN_ACCESS_KEY_ID").unwrap_or_default(),
-            aliyun_access_key_secret: env::var("ALIYUN_ACCESS_KEY_SECRET").unwrap_or_default(),
-            aliyun_region: env::var("ALIYUN_REGION").unwrap_or_else(|_| "cn-shanghai".into()),
+            ark_api_key: env_trimmed("ARK_API_KEY"),
+            ark_base_url: env_trimmed("ARK_BASE_URL"),
+            ark_model: env_trimmed("ARK_MODEL"),
             pipeline_provider: env::var("PIPELINE_PROVIDER").unwrap_or_else(|_| "auto".into()),
-            aliyun_imageseg_endpoint: env::var("ALIYUN_IMAGESEG_ENDPOINT").unwrap_or_default(),
-            aliyun_imageenhan_endpoint: env::var("ALIYUN_IMAGEENHAN_ENDPOINT").unwrap_or_default(),
             wechat_app_id: env_trimmed("WECHAT_APP_ID"),
             wechat_mch_id: env_trimmed("WECHAT_MCH_ID"),
             wechat_mch_serial_no: env_trimmed("WECHAT_MCH_SERIAL_NO"),
@@ -155,41 +139,43 @@ impl Config {
         !self.wx_appid.trim().is_empty() && !self.wx_secret.trim().is_empty()
     }
 
-    pub fn aliyun_ready(&self) -> bool {
-        !self.aliyun_access_key_id.trim().is_empty()
-            && !self.aliyun_access_key_secret.trim().is_empty()
+    pub fn ark_ready(&self) -> bool {
+        !self.ark_api_key.trim().is_empty()
     }
 
-    /// 密钥缺失或显式 `PIPELINE_PROVIDER=mock` 时不请求阿里云。
-    pub fn use_mock_pipeline(&self) -> bool {
-        match self.pipeline_provider.trim() {
-            "mock" => true,
-            "aliyun" => false,
-            _ => !self.aliyun_ready(),
-        }
-    }
-
-    pub fn aliyun_region_id(&self) -> &str {
-        let region = self.aliyun_region.trim();
-        if region.is_empty() {
-            "cn-shanghai"
+    pub fn ark_model(&self) -> &str {
+        let model = self.ark_model.trim();
+        if model.is_empty() {
+            crate::services::seedream::SEEDREAM_MODEL_ID
         } else {
-            region
+            model
         }
     }
 
-    pub fn imageseg_host(&self) -> String {
-        host_or(
-            &self.aliyun_imageseg_endpoint,
-            &format!("imageseg.{}.aliyuncs.com", self.aliyun_region_id()),
-        )
+    pub fn ark_base_url(&self) -> &str {
+        let base = self.ark_base_url.trim().trim_end_matches('/');
+        if base.is_empty() {
+            crate::services::seedream::ARK_DEFAULT_BASE
+        } else {
+            base
+        }
     }
 
-    pub fn imageenhan_host(&self) -> String {
-        host_or(
-            &self.aliyun_imageenhan_endpoint,
-            &format!("imageenhan.{}.aliyuncs.com", self.aliyun_region_id()),
-        )
+    pub fn pipeline_mode(&self) -> Result<PipelineMode, &'static str> {
+        resolve_provider(self.pipeline_provider.trim(), self.ark_api_key.trim())
+    }
+
+    /// 显式 mock，或 auto 且没有方舟密钥。不会请求火山方舟。
+    pub fn use_mock_pipeline(&self) -> bool {
+        matches!(self.pipeline_mode(), Ok(PipelineMode::Mock))
+    }
+
+    /// 写入任务的 provider。`seedream` 与 `ark` 都记成 `seedream`。
+    pub fn provider_label(&self) -> Result<&'static str, &'static str> {
+        match self.pipeline_mode()? {
+            PipelineMode::Mock => Ok("mock"),
+            PipelineMode::Seedream => Ok("seedream"),
+        }
     }
 
     /// 支付使用的小程序 AppID。`WECHAT_APP_ID` 优先，否则用登录的 `WX_APPID`。
@@ -326,15 +312,68 @@ fn read_pem_file(path: &str) -> std::io::Result<String> {
     Ok(std::fs::read_to_string(path)?.replace("\\n", "\n"))
 }
 
-fn host_or(raw: &str, fallback: &str) -> String {
-    let trimmed = raw
-        .trim()
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_end_matches('/');
-    if trimmed.is_empty() {
-        fallback.to_string()
-    } else {
-        trimmed.to_string()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineMode {
+    Mock,
+    Seedream,
+}
+
+/// `auto`：有 `ARK_API_KEY` 走 Seedream，否则模拟。
+/// `seedream` / `ark`：必须有方舟密钥，否则报错，不建任务。
+/// `aliyun`：已退出默认路径，明确拒绝，避免误用视觉智能密钥。
+pub fn resolve_provider(provider: &str, ark_api_key: &str) -> Result<PipelineMode, &'static str> {
+    let key_ready = !ark_api_key.trim().is_empty();
+    match provider.trim() {
+        "mock" => Ok(PipelineMode::Mock),
+        "seedream" | "ark" => {
+            if key_ready {
+                Ok(PipelineMode::Seedream)
+            } else {
+                Err("已指定火山方舟出稿，但未配置 ARK_API_KEY。不要使用阿里云视觉智能的 AccessKey。")
+            }
+        }
+        "aliyun" => Err(
+            "阿里云视觉智能（SegmentBody / GenerateHumanAnimeStyle）已不在出稿路径。请改用 PIPELINE_PROVIDER=seedream 或 ark，并配置火山方舟 ARK_API_KEY。",
+        ),
+        _ => {
+            if key_ready {
+                Ok(PipelineMode::Seedream)
+            } else {
+                Ok(PipelineMode::Mock)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_switch_follows_ark_key_and_rejects_aliyun() {
+        assert_eq!(resolve_provider("auto", "").unwrap(), PipelineMode::Mock);
+        assert_eq!(
+            resolve_provider("auto", "ark-key").unwrap(),
+            PipelineMode::Seedream
+        );
+        assert_eq!(
+            resolve_provider("mock", "ark-key").unwrap(),
+            PipelineMode::Mock
+        );
+        assert_eq!(
+            resolve_provider("seedream", "ark-key").unwrap(),
+            PipelineMode::Seedream
+        );
+        assert_eq!(
+            resolve_provider("ark", " ark-key ").unwrap(),
+            PipelineMode::Seedream
+        );
+        assert!(resolve_provider("seedream", "  ").is_err());
+        assert!(resolve_provider("ark", "")
+            .unwrap_err()
+            .contains("ARK_API_KEY"));
+        let aliyun = resolve_provider("aliyun", "LTAI-not-ark").unwrap_err();
+        assert!(aliyun.contains("视觉智能"));
+        assert!(aliyun.contains("ARK_API_KEY"));
     }
 }

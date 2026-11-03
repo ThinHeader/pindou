@@ -22,7 +22,7 @@ docs/api.md                 # 接口说明
 | 动作 | 积分 |
 |------|------|
 | 每日领取 | +3（东八区每天一次，PostgreSQL `daily_claims` 幂等） |
-| 成功出稿 | −1（整条 MVP+：去背 + 卡通 + 拼豆，只扣一次；失败或取消不扣，也不退款） |
+| 成功出稿 | −1（整条 MVP+：Seedream 出稿 + 拼豆，只扣一次；失败或取消不扣，也不退款） |
 | 激励广告 | +1 |
 | 充值 | 10 / ¥6，35 / ¥18，60 / ¥30。未配商户参数时开发示意到账；配齐后走微信支付 JSAPI，验签成功才入账一次 |
 
@@ -83,25 +83,25 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/wx-login \
 
 变量说明见 `apps/api/.env.example`。不要提交私钥和 APIv3 密钥。
 
-MVP+ 出稿默认「智能去背 → 人物动漫化 → 自研最近邻拼豆」。阿里云密钥见下方。没配密钥时走开发模拟，仍然会产出透明底、卡通中间图和真实色号稿，方便本地和 CI。
+MVP+ 出稿默认「上传 → 火山方舟 Seedream 5.0 Flash 图生图 → 自研最近邻拼豆」。方舟密钥见下方。没配密钥时走开发模拟，仍然会产出透明底平涂中间图和真实色号稿，方便本地和 CI，也不会访问网络。
 
-## 阿里云视觉（可选）
+## 火山方舟 Seedream（出稿）
 
 在 `apps/api/.env`：
 
 | 变量 | 作用 |
 |------|------|
-| `ALIYUN_ACCESS_KEY_ID` | 访问密钥 ID。留空则不请求阿里云 |
-| `ALIYUN_ACCESS_KEY_SECRET` | 访问密钥 Secret。不要提交到仓库 |
-| `ALIYUN_REGION` | 默认 `cn-shanghai` |
-| `PIPELINE_PROVIDER` | `auto`（有密钥用阿里云，否则模拟）/ `mock` / `aliyun` |
-| `ALIYUN_IMAGESEG_ENDPOINT` | 可选，分割 API 主机名 |
-| `ALIYUN_IMAGEENHAN_ENDPOINT` | 可选，动漫化 API 主机名 |
-| `PUBLIC_BASE_URL` | 原图和抠图的公网地址。阿里云要能下载这个 URL |
+| `ARK_API_KEY` | 火山方舟 API Key。留空则 `auto` 走开发模拟。不要提交到仓库 |
+| `ARK_BASE_URL` | 可选，默认 `https://ark.cn-beijing.volces.com` |
+| `ARK_MODEL` | 可选，默认 `doubao-seedream-5-0-flash-260915`（Seedream 5.0 Flash） |
+| `PIPELINE_PROVIDER` | `auto`（有方舟密钥用 Seedream，否则模拟）/ `mock` / `seedream` / `ark` |
+| `PUBLIC_BASE_URL` | 原图的公网地址。方舟能访问时用这个 URL；本机 `127.0.0.1` 会改成随请求附带的 base64 |
 
-人像走图像分割 `SegmentBody`，宠物和静物走 `SegmentCommonImage`。卡通走图像生产 `GenerateHumanAnimeStyle`（轻 = handdrawn，标准 = anime，强 = 3d）。珠图不用扩散模型，是最近邻缩到 52/78/104 再映射内置 SKU 色板。
+这是方舟 OpenAPI `POST /api/v3/images/generations`（图生图），不是阿里云视觉智能，也不是 SeedEdit VIAPI。`ALIYUN_ACCESS_KEY_ID` / `ALIYUN_ACCESS_KEY_SECRET` 不能用于这条管线。`PIPELINE_PROVIDER=aliyun` 会直接 400。
 
-`PIPELINE_PROVIDER=aliyun` 但没配密钥时，出稿接口直接返回 400，不会扣积分。
+Flash 大约 ¥0.12 / 张（约数）。MVP 只用 Flash，没有更高档的「增强」模型。接口通常返回约 1024×1024 的图。提示词里的点阵说法只是平涂风格，**珠板格数仍是用户选的 52 / 78 / 104**：Seedream 之后用最近邻缩到这块板，再映射内置 SKU 色板。不用扩散模型产生官方珠图。
+
+`PIPELINE_PROVIDER=seedream` 或 `ark` 但没配 `ARK_API_KEY` 时，出稿接口直接返回 400，不会扣积分。
 
 积分：整次成功才扣 1 分，写在落稿的同一个事务里。中间任何一步失败或用户取消，都不扣，因此也没有退款流水。
 
@@ -114,7 +114,7 @@ cd apps/api
 cargo test
 ```
 
-覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、MVP+ 模拟管线（去背 / 卡通 / 最近邻色号，成功才扣 1 分）、改名删除、作品发布与广场互动返回 410、开发示意充值只入账一次、微信支付验签回调幂等、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数，避免测试打到真微信。支付用例使用本机假微信和测试密钥。
+覆盖：开发态登录、日领 PostgreSQL 幂等、坏图不扣分、MVP+ 模拟管线（Seedream 风格的透明平涂中间图 / 最近邻色号，成功才扣 1 分）、52 / 78 / 104 都按所选珠板出格、没配方舟密钥时 `seedream` / `ark` / `aliyun` 返回 400 且不扣分、改名删除、作品发布与广场互动返回 410、开发示意充值只入账一次、微信支付验签回调幂等、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数和方舟密钥，避免测试打到真微信或真方舟。支付用例使用本机假微信和测试密钥。
 
 ## 4. 小程序
 
@@ -132,7 +132,7 @@ npm install            # .npmrc 已打开 legacy-peer-deps，对齐 uni-app 与 
 2. 模拟器可访问 `127.0.0.1`。真机改成电脑局域网 IP，并在开发者工具关闭「校验合法域名」（`manifest.json` 里 `urlCheck` 已是 false）。
 3. 开发态不要设 `VITE_WX_LOGIN`。登录页「微信一键登录」会使用本机保存的稳定 mock code。后端配好 AppId/Secret 后，再把 `VITE_WX_LOGIN=1`，才会把 `uni.login` 的 code 交给 code2session。
 
-建议走一遍：登录 → 领取今日 +3 → 出稿（拍照 / 相册 / 示例图）→ 选珠板、色数、去背和卡通强度 → 生成页看上传 / 去背 / 卡通 / 拼豆 → 预览里对比原图、卡通中间态和拼豆结果 → 稿件库看到管线标签 → 打开教程只读页。积分为 0 时会弹出「看广告 / 去充值」。没配阿里云时，生成页的去背说明是「开发模拟」。
+建议走一遍：登录 → 领取今日 +3 → 出稿（拍照 / 相册 / 示例图）→ 选珠板和色数 → 生成页看上传 / AI 出稿 / 拼豆像素 → 预览里对比原图、Seedream 中间图和拼豆结果 → 稿件库看到管线标签 → 打开教程只读页。积分为 0 时会弹出「看广告 / 去充值」。没配方舟密钥时，生成页的 AI 出稿说明是「开发模拟」。
 
 ## 5. 对象存储
 

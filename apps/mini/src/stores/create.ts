@@ -5,7 +5,6 @@ import { useCreditsStore } from './credits'
 
 export type BoardSize = 52 | 78 | 104
 export type PalettePref = 'auto' | 'warm' | 'macaron' | 'contrast'
-export type CartoonStrength = 'light' | 'standard' | 'strong'
 export type SubjectType = 'person' | 'pet' | 'object'
 export type PaletteBrand = 'generic' | 'mard' | 'perler' | 'shop'
 
@@ -19,9 +18,7 @@ export const useCreateStore = defineStore('create', {
     boardSize: 52 as BoardSize,
     colorCount: 12,
     palettePref: 'auto' as PalettePref,
-    /** 智能去背，默认开。 */
-    removeBg: true,
-    cartoonStrength: 'standard' as CartoonStrength,
+    /** 只写入稿件标签，不改变 Seedream 提示词。 */
     subjectType: 'person' as SubjectType,
     paletteBrand: 'generic' as PaletteBrand,
     /** 本次出稿要保存的稿件名。空则交给后端默认名。 */
@@ -44,8 +41,6 @@ export const useCreateStore = defineStore('create', {
       this.boardSize = 52
       this.colorCount = 12
       this.palettePref = 'auto'
-      this.removeBg = true
-      this.cartoonStrength = 'standard'
       this.subjectType = 'person'
       this.paletteBrand = 'generic'
     },
@@ -91,8 +86,6 @@ export const useCreateStore = defineStore('create', {
           color_count: this.colorCount,
           palette_pref: this.palettePref,
           title: named || undefined,
-          remove_bg: this.removeBg,
-          cartoon_strength: this.cartoonStrength,
           subject_type: this.subjectType,
           palette_brand: this.paletteBrand,
         })
@@ -112,12 +105,6 @@ export const useCreateStore = defineStore('create', {
       this.palettePref =
         pref === 'warm' || pref === 'macaron' || pref === 'contrast' ? pref : 'auto'
       if (draft.pipeline === 'mvp_plus') {
-        this.removeBg = draft.remove_bg !== false
-        const strength = draft.cartoon_strength
-        this.cartoonStrength =
-          strength === 'light' || strength === 'strong' || strength === 'standard'
-            ? strength
-            : 'standard'
         const subject = draft.subject_type
         this.subjectType = subject === 'pet' || subject === 'object' ? subject : 'person'
         const brand = draft.palette_brand

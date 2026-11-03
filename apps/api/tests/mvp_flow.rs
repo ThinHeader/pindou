@@ -63,14 +63,20 @@ fn base64_std(bytes: &[u8]) -> String {
 }
 
 async fn app() -> axum::Router {
+    app_configured(|_| {}).await
+}
+
+async fn app_configured(edit: impl FnOnce(&mut pindou_api::Config)) -> axum::Router {
     let mut config = pindou_api::Config::from_env();
-    // 集成测试不访问阿里云，即使本机配了密钥也走模拟管线。
+    // 集成测试不访问方舟，即使本机配了密钥也走模拟管线。
     config.pipeline_provider = "mock".into();
+    config.ark_api_key.clear();
     // 即使本机 .env 配了商户参数，这条链路也只测开发示意充值。
     config.force_mock_pay();
+    edit(&mut config);
     let state = pindou_api::connect(&config)
         .await
-        .expect("连接 PostgreSQL 失败，请先启动 docker compose");
+        .expect("连接 PostgreSQL 失败，请先启动数据库");
     pindou_api::router(state)
 }
 
@@ -274,10 +280,7 @@ async fn mvp_auth_credits_generate_plaza() {
         .as_str()
         .unwrap()
         .contains("/files/"));
-    assert!(generated["matted_url"]
-        .as_str()
-        .unwrap()
-        .contains("/files/"));
+    assert!(generated["matted_url"].is_null(), "{generated}");
     assert!(generated["cartoon_url"]
         .as_str()
         .unwrap()
@@ -288,7 +291,8 @@ async fn mvp_auth_credits_generate_plaza() {
         .iter()
         .map(|stage| stage["id"].as_str().unwrap())
         .collect();
-    assert_eq!(stage_ids, ["upload", "matting", "cartoon", "pixel"]);
+    assert_eq!(stage_ids, ["upload", "seedream", "pixel"]);
+    assert_eq!(generated["draft"]["board_size"], 52);
     assert!(generated["draft"]["palette"].as_array().unwrap().len() >= 1);
     assert!(generated["draft"]["palette"].as_array().unwrap().len() <= 8);
     assert_eq!(generated["draft"]["peg_count"], 52 * 52);
@@ -721,7 +725,7 @@ async fn get_bytes(app: &axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
 }
 
 #[tokio::test]
-async fn mvp_plus_mock_pipeline_tags_and_skip_matting() {
+async fn mvp_plus_mock_pipeline_tags_and_board_sizes() {
     let app = app().await;
     let code = format!("mock:pipe-{}", Uuid::new_v4());
     let (status, login) = call(
@@ -762,16 +766,25 @@ async fn mvp_plus_mock_pipeline_tags_and_skip_matting() {
     .await;
     assert_eq!(job["provider"], "mock");
     assert_eq!(job["balance"], 2);
+    assert_eq!(job["charged"], true);
     let tags = job["draft"]["pipeline_tags"].as_array().unwrap();
     let tag_text: Vec<&str> = tags.iter().filter_map(|item| item.as_str()).collect();
-    assert!(tag_text.contains(&"智能去背"), "{tag_text:?}");
-    assert!(tag_text.contains(&"卡通 · 强"), "{tag_text:?}");
+    assert!(tag_text.contains(&"开发模拟出稿"), "{tag_text:?}");
     assert!(tag_text.contains(&"拼豆量化"), "{tag_text:?}");
     assert!(tag_text.contains(&"宠物"), "{tag_text:?}");
+    assert!(
+        !tag_text
+            .iter()
+            .any(|tag| tag.contains("去背") || tag.contains("卡通")),
+        "{tag_text:?}"
+    );
     let lines = job["draft"]["pipeline_lines"].as_array().unwrap();
     assert!(lines
         .iter()
-        .any(|line| line.as_str().unwrap_or("").contains("开发模拟抠图")));
+        .any(|line| line.as_str().unwrap_or("").contains("开发模拟出稿")));
+    assert!(lines
+        .iter()
+        .any(|line| line.as_str().unwrap_or("").contains("52×52")));
     assert!(lines
         .iter()
         .any(|line| line.as_str().unwrap_or("").contains("店内色卡")));
@@ -785,13 +798,36 @@ async fn mvp_plus_mock_pipeline_tags_and_skip_matting() {
     let (status, bytes) = get_bytes(&app, &format!("/files/{path}")).await;
     assert_eq!(status, StatusCode::OK, "{cartoon_url}");
     assert!(bytes.starts_with(b"\x89PNG"));
+    let intermediate = image::load_from_memory(&bytes).unwrap().to_rgba8();
+    assert_eq!((intermediate.width(), intermediate.height()), (24, 24));
+    assert_eq!(intermediate.get_pixel(0, 0)[3], 0);
+    assert_ne!((intermediate.width(), intermediate.height()), (52, 52));
+
+    let wide = generate_done(
+        &app,
+        token,
+        json!({
+            "image_base64": png_base64(),
+            "board_size": 78,
+            "color_count": 8
+        }),
+    )
+    .await;
+    assert_eq!(wide["draft"]["board_size"], 78);
+    assert_eq!(wide["draft"]["peg_count"], 78 * 78);
+    assert_eq!(wide["balance"], 1);
+    assert!(wide["draft"]["pipeline_lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line.as_str().unwrap_or("").contains("78×78")));
 
     let plain = generate_done(
         &app,
         token,
         json!({
             "image_ref": "builtin:bear",
-            "board_size": 52,
+            "board_size": 104,
             "color_count": 6,
             "remove_bg": false,
             "cartoon_strength": "light",
@@ -801,14 +837,16 @@ async fn mvp_plus_mock_pipeline_tags_and_skip_matting() {
     .await;
     assert!(plain["matted_url"].is_null(), "{plain}");
     assert!(plain["cartoon_url"].as_str().is_some());
-    assert_eq!(plain["balance"], 1);
+    assert_eq!(plain["draft"]["board_size"], 104);
+    assert_eq!(plain["draft"]["peg_count"], 104 * 104);
+    assert_eq!(plain["balance"], 0);
     let states: Vec<&str> = plain["stages"]
         .as_array()
         .unwrap()
         .iter()
         .map(|stage| stage["state"].as_str().unwrap())
         .collect();
-    assert_eq!(states[1], "skipped", "{states:?}");
+    assert_eq!(states, ["done", "done", "done"], "{states:?}");
 
     let job_id = plain["job_id"].as_str().unwrap();
     let other = format!("mock:pipe-other-{}", Uuid::new_v4());
@@ -856,6 +894,97 @@ async fn mvp_plus_mock_pipeline_tags_and_skip_matting() {
         "已完成的任务取消后仍是完成态 {kept}"
     );
     assert_eq!(kept["charged"], true);
+}
+
+#[tokio::test]
+async fn provider_switch_charges_only_when_mock_succeeds() {
+    for provider in ["seedream", "ark", "aliyun"] {
+        let app = app_configured(|config| {
+            config.pipeline_provider = provider.into();
+        })
+        .await;
+        let code = format!("mock:switch-{provider}-{}", Uuid::new_v4());
+        let (status, login) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/wx-login",
+            None,
+            Some(json!({ "code": code })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{login}");
+        let token = login["token"].as_str().unwrap();
+        let (status, claimed) = call(
+            &app,
+            "POST",
+            "/api/v1/credits/daily-claim",
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{claimed}");
+        let (status, denied) = call(
+            &app,
+            "POST",
+            "/api/v1/drafts/generate",
+            Some(token),
+            Some(json!({
+                "image_base64": png_base64(),
+                "board_size": 78,
+                "color_count": 8
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{provider} {denied}");
+        let message = denied["message"].as_str().unwrap_or("");
+        assert!(message.contains("ARK_API_KEY"), "{provider} {denied}");
+        if provider == "aliyun" {
+            assert!(message.contains("视觉智能"), "{denied}");
+        }
+        let (status, still) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK, "{still}");
+        assert_eq!(still["balance"], 3, "{provider} 失败不应扣分 {still}");
+    }
+
+    let app = app_configured(|config| {
+        config.pipeline_provider = "auto".into();
+    })
+    .await;
+    let code = format!("mock:switch-auto-{}", Uuid::new_v4());
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    let token = login["token"].as_str().unwrap();
+    let (status, claimed) = call(
+        &app,
+        "POST",
+        "/api/v1/credits/daily-claim",
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    let generated = generate_done(
+        &app,
+        token,
+        json!({
+            "image_base64": png_base64(),
+            "board_size": 104,
+            "color_count": 8
+        }),
+    )
+    .await;
+    assert_eq!(generated["provider"], "mock");
+    assert_eq!(generated["charged"], true);
+    assert_eq!(generated["balance"], 2);
+    assert_eq!(generated["draft"]["board_size"], 104);
+    assert_eq!(generated["draft"]["peg_count"], 104 * 104);
 }
 
 async fn post_profile(
