@@ -184,7 +184,7 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 ### `GET /files/{key}`
 
-读取上面的对象。预览图键形如 `previews/<uuid>.png`。
+读取上面的对象。`key` 带目录前缀：上传图是 `uploads/<uuid>.<ext>`，对应地址是 `/files/uploads/<uuid>.<ext>`。只写 `/files/<uuid>.<ext>` 会 404，文件实际在存储目录的 `uploads/` 下。预览图键形如 `previews/<uuid>.png`，Seedream 中间图键形如 `pipeline/<job>/seedream.png`。
 
 ## 出稿（MVP+）
 
@@ -193,6 +193,8 @@ Base URL（本地）：`http://127.0.0.1:3000`
 `POST /api/v1/drafts/generate` 校验参数和图片后立刻返回任务，管线在后台跑。小程序轮询 `GET /api/v1/jobs/{id}`。
 
 路径是：上传原图 → `POST https://ark.cn-beijing.volces.com/api/v3/images/generations`（模型 `doubao-seedream-5-0-flash-260915`）→ 自研最近邻。方舟返回约 1K 平涂图。珠板格数只看 `board_size`（52 / 78 / 104），不看提示词，也不看 API 图的像素尺寸。Flash 大约 ¥0.12 / 张。不要用阿里云视觉智能或 VIAPI 的密钥。
+
+图生图的 `image` 是请求体内的 data URL（`data:image/...;base64,...`），用的是服务已经读到的原图字节。不会把 `PUBLIC_BASE_URL/files/...` 交给方舟拉取：方舟在国内，公网域名在海外或指到本机时会超时（`Timeout while down`）。
 
 ### `POST /api/v1/drafts/generate`
 

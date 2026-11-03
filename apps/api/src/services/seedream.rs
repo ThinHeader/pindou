@@ -139,13 +139,13 @@ pub fn generation_body(model: &str, image: &str) -> Value {
     })
 }
 
-/// 公网 URL 交给方舟拉取；本机地址改成 data URL，否则方舟访问不到对象存储。
-pub fn reference_image(public_url: &str, bytes: &[u8]) -> String {
-    if ark_can_fetch(public_url) {
-        public_url.to_string()
-    } else {
-        data_url(bytes)
-    }
+/// 参考图一律内联成 data URL。
+///
+/// `public_url` 只保留给调用方对照，这里故意不用。方舟机房在国内，生产
+/// `PUBLIC_BASE_URL`（例如海外自建域名）和本机 loopback 都可能拉不到图，
+/// 交给方舟会返回 `Timeout while down`。调用方在请求前已经读到原图字节。
+pub fn reference_image(_public_url: &str, bytes: &[u8]) -> String {
+    data_url(bytes)
 }
 
 pub async fn run_ark(
@@ -398,27 +398,6 @@ fn remote_from(value: &Value) -> SeedreamError {
     }
 }
 
-fn ark_can_fetch(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return false;
-    }
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    !is_loopback(host)
-}
-
-fn is_loopback(host: &str) -> bool {
-    let host = host.trim_matches(['[', ']']);
-    host.eq_ignore_ascii_case("localhost")
-        || host == "0.0.0.0"
-        || host == "::1"
-        || host.starts_with("127.")
-}
-
 fn data_url(bytes: &[u8]) -> String {
     let mime = if bytes.starts_with(b"\x89PNG") {
         "image/png"
@@ -513,13 +492,39 @@ mod tests {
     }
 
     #[test]
-    fn loopback_reference_is_base64_and_public_url_is_kept() {
+    fn https_public_url_is_inlined_and_not_handed_to_ark() {
         let bytes = png(2, 2, |_, _| Rgba([1, 2, 3, 255]));
-        let public = reference_image("https://cdn.example.com/cat.png", &bytes);
-        assert_eq!(public, "https://cdn.example.com/cat.png");
-        let local = reference_image("http://127.0.0.1:3000/files/a.png", &bytes);
+        let overseas =
+            "https://api.dongpouu.top/files/uploads/11111111-1111-1111-1111-111111111111.png";
+        let image = reference_image(overseas, &bytes);
+        assert!(image.starts_with("data:image/png;base64,"), "{image}");
+        assert!(!image.contains("https://"), "{image}");
+        assert!(!image.contains("dongpouu"), "{image}");
+        assert!(!image.contains("/files/"), "{image}");
+        let payload = image.split_once(',').expect("data url").1;
+        assert_eq!(STANDARD.decode(payload).unwrap(), bytes);
+
+        let local = reference_image("http://127.0.0.1:56778/files/uploads/a.png", &bytes);
         assert!(local.starts_with("data:image/png;base64,"));
         assert!(!local.contains("127.0.0.1"));
+
+        let cdn = reference_image("https://cdn.example.com/cat.png", &bytes);
+        assert!(cdn.starts_with("data:image/png;base64,"));
+        assert!(!cdn.contains("cdn.example.com"));
+
+        let body = generation_body(SEEDREAM_MODEL_ID, &image);
+        assert_eq!(body["image"], image);
+        let text = body.to_string();
+        assert!(!text.contains("dongpouu"));
+        assert!(!text.contains("sequential_"));
+    }
+
+    #[test]
+    fn jpeg_bytes_use_jpeg_data_url() {
+        let bytes = [0xFF, 0xD8, 0xFF, 0xD9];
+        let image = reference_image("https://api.example.com/files/uploads/a.jpg", &bytes);
+        assert!(image.starts_with("data:image/jpeg;base64,"));
+        assert!(!image.contains("http"));
     }
 
     #[test]

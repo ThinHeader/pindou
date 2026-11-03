@@ -214,6 +214,8 @@ async fn run_inner(state: &AppState, job_id: Uuid) -> Result<(), Fail> {
                 stage: "seedream".into(),
                 message: err.into_message(),
             })?;
+            // 原图字节已在本地。reference_image 会内联 data URL，
+            // 不把 PUBLIC_BASE_URL/files/... 交给方舟去拉。
             let image_url = state.storage.public_url(&original_key);
             seedream::run_ark(&client, &state.config, &image_url, &source_bytes)
                 .await
