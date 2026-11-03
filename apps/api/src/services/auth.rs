@@ -128,21 +128,15 @@ pub fn mock_openid(code: &str) -> String {
     format!("dev:{}", &hex::encode(hasher.finalize())[..32])
 }
 
-/// 登录态展示名：优先「我的」页填写的昵称，否则回落到账号原昵称。
-const USER_COLUMNS: &str = "\
-id, openid, \
-COALESCE(NULLIF(TRIM(profile_nickname), ''), nickname) AS nickname, \
-avatar_url";
-
 pub async fn upsert_user(pool: &PgPool, openid: &str) -> AppResult<UserRecord> {
-    let row = sqlx::query_as::<_, UserRow>(&format!(
+    let row = sqlx::query_as::<_, UserRow>(
         r#"
         INSERT INTO users (openid, nickname)
         VALUES ($1, '拼豆玩家')
         ON CONFLICT (openid) DO UPDATE SET updated_at = now()
-        RETURNING {USER_COLUMNS}
-        "#
-    ))
+        RETURNING id, openid, nickname, avatar_url
+        "#,
+    )
     .bind(openid)
     .fetch_one(pool)
     .await?;
@@ -170,40 +164,6 @@ pub fn checked_nickname(raw: &str) -> AppResult<String> {
     Ok(nickname.to_string())
 }
 
-/// 只接受本服务上传接口返回的 `uploads/<uuid>.<ext>`，或带 `/files/` 的同源地址。
-pub fn normalize_avatar_key(raw: &str) -> AppResult<String> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(AppError::BadRequest("请先选择头像".into()));
-    }
-    let key = if raw.contains("://") || raw.starts_with('/') || raw.contains("/files/") {
-        let Some(idx) = raw.find("uploads/") else {
-            return Err(AppError::BadRequest("头像无效，请重新选择".into()));
-        };
-        let key = &raw[idx..];
-        let key = key.split(['?', '#']).next().unwrap_or(key);
-        key.to_string()
-    } else {
-        raw.to_string()
-    };
-    let Some(name) = key.strip_prefix("uploads/") else {
-        return Err(AppError::BadRequest("头像无效，请重新选择".into()));
-    };
-    if name.contains('/') {
-        return Err(AppError::BadRequest("头像无效，请重新选择".into()));
-    }
-    let Some((id, ext)) = name.rsplit_once('.') else {
-        return Err(AppError::BadRequest("头像无效，请重新选择".into()));
-    };
-    if Uuid::parse_str(id).is_err() {
-        return Err(AppError::BadRequest("头像无效，请重新选择".into()));
-    }
-    if !matches!(ext, "jpg" | "jpeg" | "png" | "gif") {
-        return Err(AppError::BadRequest("头像只支持 JPG、PNG 或 GIF".into()));
-    }
-    Ok(key)
-}
-
 pub fn avatar_public_url(storage: &crate::services::storage::LocalStorage, stored: &str) -> String {
     if stored.contains("://") {
         stored.to_string()
@@ -212,11 +172,9 @@ pub fn avatar_public_url(storage: &crate::services::storage::LocalStorage, store
     }
 }
 
-/// 更新「我的」展示资料。昵称写入 `profile_nickname`，不改广场用的 `nickname`。
-/// 头像只收已上传的对象键，确认文件存在后把键存进 `avatar_url`。
-pub async fn update_profile(
+/// 登录页提交的头像和昵称。两者至少有一项。头像键由本服务写入对象存储后传入。
+pub async fn save_display(
     pool: &PgPool,
-    storage: &crate::services::storage::LocalStorage,
     user_id: Uuid,
     nickname: Option<&str>,
     avatar_key: Option<&str>,
@@ -225,24 +183,20 @@ pub async fn update_profile(
         Some(value) => Some(checked_nickname(value)?),
         None => None,
     };
-    let avatar_key = match avatar_key {
-        Some(value) => Some(checked_avatar_key(storage, value).await?),
-        None => None,
-    };
     if nickname.is_none() && avatar_key.is_none() {
         return Err(AppError::BadRequest("请填写昵称或选择头像".into()));
     }
 
-    let row = sqlx::query_as::<_, UserRow>(&format!(
+    let row = sqlx::query_as::<_, UserRow>(
         r#"
         UPDATE users
-        SET profile_nickname = COALESCE($2, profile_nickname),
+        SET nickname = COALESCE($2, nickname),
             avatar_url = COALESCE($3, avatar_url),
             updated_at = now()
         WHERE id = $1
-        RETURNING {USER_COLUMNS}
-        "#
-    ))
+        RETURNING id, openid, nickname, avatar_url
+        "#,
+    )
     .bind(user_id)
     .bind(nickname)
     .bind(avatar_key)
@@ -252,27 +206,14 @@ pub async fn update_profile(
     Ok(row.into())
 }
 
-async fn checked_avatar_key(
-    storage: &crate::services::storage::LocalStorage,
-    raw: &str,
-) -> AppResult<String> {
-    let key = normalize_avatar_key(raw)?;
-    match storage.get_object(&key).await {
-        Ok(_) => Ok(key),
-        Err(AppError::NotFound(_)) => {
-            Err(AppError::BadRequest("头像文件不存在，请重新选择".into()))
-        }
-        Err(err) => Err(err),
-    }
-}
-
 pub async fn get_user(pool: &PgPool, user_id: Uuid) -> AppResult<UserRecord> {
-    let row =
-        sqlx::query_as::<_, UserRow>(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await?
-            .ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
+    let row = sqlx::query_as::<_, UserRow>(
+        "SELECT id, openid, nickname, avatar_url FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
     Ok(row.into())
 }
 
@@ -315,18 +256,6 @@ mod tests {
             checked_nickname(&"豆".repeat(20)).unwrap().chars().count(),
             20
         );
-    }
-
-    #[test]
-    fn avatar_key_must_be_our_upload() {
-        assert!(normalize_avatar_key("https://evil.test/a.png").is_err());
-        assert!(normalize_avatar_key("uploads/../../etc/passwd").is_err());
-        assert!(normalize_avatar_key("previews/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.png").is_err());
-        let id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        let key = format!("uploads/{id}.png");
-        assert_eq!(normalize_avatar_key(&key).unwrap(), key);
-        let url = format!("http://127.0.0.1:3000/files/{key}?x=1");
-        assert_eq!(normalize_avatar_key(&url).unwrap(), key);
     }
 
     #[test]
