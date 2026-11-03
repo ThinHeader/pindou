@@ -15,6 +15,7 @@ export const useUserStore = defineStore('user', {
   getters: {
     isLoggedIn: (s) => Boolean(s.token),
     nickname: (s) => s.user?.nickname || '拼豆玩家',
+    avatarUrl: (s) => s.user?.avatar_url || '',
   },
   actions: {
     hydrate() {
@@ -78,8 +79,8 @@ export const useUserStore = defineStore('user', {
         throw e
       }
     },
-    async rename(nickname: string) {
-      const profile = await authApi.patchMe(nickname)
+    async updateProfile(body: { nickname?: string; avatar_key?: string }) {
+      const profile = await authApi.patchMe(body)
       this.profile = profile
       this.user = profile.user
       this.persist()

@@ -49,7 +49,15 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 ### `GET /api/v1/me` · `PUT /api/v1/me`
 
-`PUT` 体：`{ "nickname": "豆豆手作" }`（1–20 字）。同样接受 `PATCH`，小程序用 `PUT`（`uni.request` 没有 PATCH）。
+`PUT` 同样接受 `PATCH`。小程序用 `PUT`（`uni.request` 没有 PATCH）。至少带一项：
+
+```json
+{ "nickname": "豆豆手作", "avatar_key": "uploads/<uuid>.png" }
+```
+
+- `nickname`：1–20 个字，写入「我的」展示名。省略则不改。这个名字只出现在登录响应和 `/me`。
+- `avatar_key`：先 `POST /api/v1/uploads` 上传头像（沿用现有对象存储，返回 `key` / `url` / `etag` / `content_type`），再把 `key` 交到这里。只接受已存在的 `uploads/<uuid>.jpg|jpeg|png|gif`，不接受外部 URL。省略则不改。
+- 响应里的 `user.avatar_url` 是可访问的文件 URL。库里存的是对象键，换 `PUBLIC_BASE_URL` 后下次读取会按新地址拼。头像只出现在登录响应和 `/me`。
 
 返回用户、稿件 / 历史作品行 / 收藏计数、积分快照和最近稿件。不再返回作品列表。
 

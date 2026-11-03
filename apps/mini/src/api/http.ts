@@ -102,7 +102,8 @@ export function uploadImage(filePath: string): Promise<StoredObject> {
 export const authApi = {
   wxLogin: (code: string) => http.post<LoginResult>('/api/v1/auth/wx-login', { code }),
   me: () => http.get<MeProfile>('/api/v1/me'),
-  patchMe: (nickname: string) => http.put<MeProfile>('/api/v1/me', { nickname }),
+  patchMe: (body: { nickname?: string; avatar_key?: string }) =>
+    http.put<MeProfile>('/api/v1/me', body),
 }
 
 export const creditsApi = {

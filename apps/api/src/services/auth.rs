@@ -128,15 +128,21 @@ pub fn mock_openid(code: &str) -> String {
     format!("dev:{}", &hex::encode(hasher.finalize())[..32])
 }
 
+/// 登录态展示名：优先「我的」页填写的昵称，否则回落到账号原昵称。
+const USER_COLUMNS: &str = "\
+id, openid, \
+COALESCE(NULLIF(TRIM(profile_nickname), ''), nickname) AS nickname, \
+avatar_url";
+
 pub async fn upsert_user(pool: &PgPool, openid: &str) -> AppResult<UserRecord> {
-    let row = sqlx::query_as::<_, UserRow>(
+    let row = sqlx::query_as::<_, UserRow>(&format!(
         r#"
         INSERT INTO users (openid, nickname)
         VALUES ($1, '拼豆玩家')
         ON CONFLICT (openid) DO UPDATE SET updated_at = now()
-        RETURNING id, openid, nickname, avatar_url
-        "#,
-    )
+        RETURNING {USER_COLUMNS}
+        "#
+    ))
     .bind(openid)
     .fetch_one(pool)
     .await?;
@@ -155,39 +161,118 @@ pub async fn upsert_user(pool: &PgPool, openid: &str) -> AppResult<UserRecord> {
     Ok(row.into())
 }
 
-pub async fn update_nickname(
-    pool: &PgPool,
-    user_id: Uuid,
-    nickname: &str,
-) -> AppResult<UserRecord> {
-    let nickname = nickname.trim();
+pub fn checked_nickname(raw: &str) -> AppResult<String> {
+    let nickname = raw.trim();
     let len = nickname.chars().count();
     if !(1..=20).contains(&len) {
         return Err(AppError::BadRequest("昵称需要 1 到 20 个字".into()));
     }
-    let row = sqlx::query_as::<_, UserRow>(
+    Ok(nickname.to_string())
+}
+
+/// 只接受本服务上传接口返回的 `uploads/<uuid>.<ext>`，或带 `/files/` 的同源地址。
+pub fn normalize_avatar_key(raw: &str) -> AppResult<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(AppError::BadRequest("请先选择头像".into()));
+    }
+    let key = if raw.contains("://") || raw.starts_with('/') || raw.contains("/files/") {
+        let Some(idx) = raw.find("uploads/") else {
+            return Err(AppError::BadRequest("头像无效，请重新选择".into()));
+        };
+        let key = &raw[idx..];
+        let key = key.split(['?', '#']).next().unwrap_or(key);
+        key.to_string()
+    } else {
+        raw.to_string()
+    };
+    let Some(name) = key.strip_prefix("uploads/") else {
+        return Err(AppError::BadRequest("头像无效，请重新选择".into()));
+    };
+    if name.contains('/') {
+        return Err(AppError::BadRequest("头像无效，请重新选择".into()));
+    }
+    let Some((id, ext)) = name.rsplit_once('.') else {
+        return Err(AppError::BadRequest("头像无效，请重新选择".into()));
+    };
+    if Uuid::parse_str(id).is_err() {
+        return Err(AppError::BadRequest("头像无效，请重新选择".into()));
+    }
+    if !matches!(ext, "jpg" | "jpeg" | "png" | "gif") {
+        return Err(AppError::BadRequest("头像只支持 JPG、PNG 或 GIF".into()));
+    }
+    Ok(key)
+}
+
+pub fn avatar_public_url(storage: &crate::services::storage::LocalStorage, stored: &str) -> String {
+    if stored.contains("://") {
+        stored.to_string()
+    } else {
+        storage.public_url(stored)
+    }
+}
+
+/// 更新「我的」展示资料。昵称写入 `profile_nickname`，不改广场用的 `nickname`。
+/// 头像只收已上传的对象键，确认文件存在后把键存进 `avatar_url`。
+pub async fn update_profile(
+    pool: &PgPool,
+    storage: &crate::services::storage::LocalStorage,
+    user_id: Uuid,
+    nickname: Option<&str>,
+    avatar_key: Option<&str>,
+) -> AppResult<UserRecord> {
+    let nickname = match nickname {
+        Some(value) => Some(checked_nickname(value)?),
+        None => None,
+    };
+    let avatar_key = match avatar_key {
+        Some(value) => Some(checked_avatar_key(storage, value).await?),
+        None => None,
+    };
+    if nickname.is_none() && avatar_key.is_none() {
+        return Err(AppError::BadRequest("请填写昵称或选择头像".into()));
+    }
+
+    let row = sqlx::query_as::<_, UserRow>(&format!(
         r#"
-        UPDATE users SET nickname = $2, updated_at = now()
+        UPDATE users
+        SET profile_nickname = COALESCE($2, profile_nickname),
+            avatar_url = COALESCE($3, avatar_url),
+            updated_at = now()
         WHERE id = $1
-        RETURNING id, openid, nickname, avatar_url
-        "#,
-    )
+        RETURNING {USER_COLUMNS}
+        "#
+    ))
     .bind(user_id)
     .bind(nickname)
+    .bind(avatar_key)
     .fetch_optional(pool)
     .await?
     .ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
     Ok(row.into())
 }
 
+async fn checked_avatar_key(
+    storage: &crate::services::storage::LocalStorage,
+    raw: &str,
+) -> AppResult<String> {
+    let key = normalize_avatar_key(raw)?;
+    match storage.get_object(&key).await {
+        Ok(_) => Ok(key),
+        Err(AppError::NotFound(_)) => {
+            Err(AppError::BadRequest("头像文件不存在，请重新选择".into()))
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub async fn get_user(pool: &PgPool, user_id: Uuid) -> AppResult<UserRecord> {
-    let row = sqlx::query_as::<_, UserRow>(
-        "SELECT id, openid, nickname, avatar_url FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
+    let row =
+        sqlx::query_as::<_, UserRow>(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
     Ok(row.into())
 }
 
@@ -219,5 +304,47 @@ mod tests {
         assert_eq!(mock_openid("dev-device-a"), mock_openid("dev-device-a"));
         assert_ne!(mock_openid("dev-device-a"), mock_openid("dev-device-b"));
         assert_eq!(mock_openid("mock:alice"), "mock:alice");
+    }
+
+    #[test]
+    fn nickname_is_one_to_twenty_chars() {
+        assert!(checked_nickname("  ").is_err());
+        assert_eq!(checked_nickname(" 豆 ").unwrap(), "豆");
+        assert!(checked_nickname(&"豆".repeat(21)).is_err());
+        assert_eq!(
+            checked_nickname(&"豆".repeat(20)).unwrap().chars().count(),
+            20
+        );
+    }
+
+    #[test]
+    fn avatar_key_must_be_our_upload() {
+        assert!(normalize_avatar_key("https://evil.test/a.png").is_err());
+        assert!(normalize_avatar_key("uploads/../../etc/passwd").is_err());
+        assert!(normalize_avatar_key("previews/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.png").is_err());
+        let id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let key = format!("uploads/{id}.png");
+        assert_eq!(normalize_avatar_key(&key).unwrap(), key);
+        let url = format!("http://127.0.0.1:3000/files/{key}?x=1");
+        assert_eq!(normalize_avatar_key(&url).unwrap(), key);
+    }
+
+    #[test]
+    fn avatar_public_url_keeps_absolute_and_resolves_key() {
+        let dir = std::env::temp_dir().join(format!("pindou-avatar-url-{}", Uuid::new_v4()));
+        let storage = crate::services::storage::LocalStorage::new(
+            dir.to_str().unwrap(),
+            "http://127.0.0.1:3000",
+        )
+        .unwrap();
+        assert_eq!(
+            avatar_public_url(&storage, "uploads/x.png"),
+            "http://127.0.0.1:3000/files/uploads/x.png"
+        );
+        assert_eq!(
+            avatar_public_url(&storage, "https://cdn.example/a.png"),
+            "https://cdn.example/a.png"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
