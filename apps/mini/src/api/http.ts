@@ -13,6 +13,7 @@ import type {
   MeProfile,
   StoredObject,
 } from './types'
+import { encodeProfileMultipart } from '../utils/local-image'
 
 const TOKEN_KEY = 'pindou_token'
 
@@ -107,6 +108,45 @@ export function uploadProfile(filePath: string, nickname: string): Promise<MePro
       name: 'file',
       formData: nickname ? { nickname } : {},
       header: authHeader(),
+      success: (res) => {
+        let data: MeProfile & ApiError
+        try {
+          data = typeof res.data === 'string' ? JSON.parse(res.data) : (res.data as MeProfile & ApiError)
+        } catch {
+          reject({ message: '资料响应无法解析' } satisfies ApiError)
+          return
+        }
+        if (res.statusCode >= 200 && res.statusCode < 300 && data.user) {
+          resolve(data)
+          return
+        }
+        reject({
+          statusCode: res.statusCode,
+          error: data.error,
+          message: data.message || '保存失败',
+        } satisfies ApiError)
+      },
+      fail: () => reject({ message: '保存失败，请重试' } satisfies ApiError),
+    })
+  })
+}
+
+/**
+ * 登录头像走 wx.request，不走 uploadFile。
+ * chooseAvatar 的临时路径会让 uploadFile 在真机直接 fail（toast 就是「保存失败，请重试」），
+ * 中文昵称放进 formData 还会乱码。接口仍是现有的 multipart POST /api/v1/me/profile。
+ */
+export function postProfileImage(file: Uint8Array, nickname: string): Promise<MeProfile> {
+  const encoded = encodeProfileMultipart(nickname, file)
+  return new Promise((resolve, reject) => {
+    uni.request({
+      url: `${API_BASE}/api/v1/me/profile`,
+      method: 'POST',
+      data: encoded.body as unknown as UniApp.RequestOptions['data'],
+      header: {
+        'Content-Type': encoded.contentType,
+        ...authHeader(),
+      },
       success: (res) => {
         let data: MeProfile & ApiError
         try {
