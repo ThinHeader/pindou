@@ -2,6 +2,7 @@
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { creditsApi, errorOf, requestVirtualPayment, requestWxPayment, virtualPayUnavailable } from '../../api/http'
+import { playRewardedVideo } from '../../utils/reward-ad'
 import type { CreditOrder, CreditPack, LedgerItem } from '../../api/types'
 import { useCreditsStore } from '../../stores/credits'
 import { useUserStore } from '../../stores/user'
@@ -12,6 +13,7 @@ const user = useUserStore()
 const packs = ref<CreditPack[]>([])
 const ledger = ref<LedgerItem[]>([])
 const paying = ref(false)
+const watching = ref(false)
 
 const fallback: CreditPack[] = [
   { code: 'small', name: '小包', credits: 10, price_cents: 600, price_label: '¥6', blurb: '约 0.6 元/次出稿', popular: false },
@@ -49,13 +51,27 @@ async function load() {
 onShow(load)
 
 async function watchAd() {
-  if (!ensureLogin()) return
+  if (!ensureLogin() || watching.value) return
+  if (credits.adClaimed) {
+    showTip('今日已领取广告奖励')
+    return
+  }
+  watching.value = true
   try {
+    await playRewardedVideo()
     const data = await credits.claimAdReward()
     showTip(`广告奖励 +${data.delta}`)
     await load()
   } catch (e) {
+    const err = errorOf(e)
+    if (err.error === 'already_claimed') {
+      credits.adClaimed = true
+      showTip(err.message || '今日已领取')
+      return
+    }
     showError(e, '广告奖励失败')
+  } finally {
+    watching.value = false
   }
 }
 
@@ -236,21 +252,21 @@ async function buy(pack: CreditPack) {
     <view class="balance">
       <text class="label">当前余额</text>
       <text class="num">{{ credits.balance }}</text>
-      <text class="sub">日送 {{ credits.dailyGrant }} · 出稿 −{{ credits.generateCost }} · {{ credits.dailyClaimed ? '今日已领' : '今日未领' }}</text>
+      <text class="sub">出稿 −{{ credits.generateCost }} · 激励广告每日 +{{ credits.adReward }}</text>
     </view>
 
     <view class="rules">
       <text class="h">积分怎么用</text>
-      <text>· 每日登录送 {{ credits.dailyGrant }} 积分（每天一次）</text>
       <text>· 每次成功出稿消耗 {{ credits.generateCost }} 积分（含 AI 出稿与拼豆像素），失败不扣</text>
-      <text>· 不足时可看广告 +{{ credits.adReward }}，或充值购买</text>
+      <text>· 看完一条激励广告得 {{ credits.adReward }} 积分，每天一次</text>
+      <text>· 不足时也可以充值购买</text>
     </view>
 
-    <view class="ad" @click="watchAd">
+    <view class="ad" :class="{ done: credits.adClaimed }" @click="watchAd">
       <text class="play">▶</text>
       <view class="ad-txt">
-        <text class="h">看激励广告</text>
-        <text class="sub">完整观看后得 {{ credits.adReward }} 积分</text>
+        <text class="h">{{ credits.adClaimed ? '今日已领取' : '看激励广告' }}</text>
+        <text class="sub">{{ credits.adClaimed ? '明天再来' : `完整观看后得 ${credits.adReward} 积分` }}</text>
       </view>
       <text class="badge">+{{ credits.adReward }}</text>
     </view>
@@ -314,6 +330,7 @@ async function buy(pack: CreditPack) {
 }
 .play { width: 64rpx; height: 64rpx; border-radius: 50%; background: $brand-soft; color: $brand-dark; text-align: center; line-height: 64rpx; }
 .ad-txt { flex: 1; }
+.ad.done { opacity: 0.72; }
 .ad .sub { display: block; color: $ink-3; font-size: 22rpx; }
 .badge { color: $brand-dark; font-weight: 800; }
 .tag { font-size: 22rpx; color: $ink-3; font-weight: 500; }

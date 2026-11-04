@@ -21,6 +21,10 @@ const OFFICIAL_API: &str = "https://api.weixin.qq.com";
 pub const REQUEST_VIRTUAL_PAYMENT: &str = "requestVirtualPayment";
 const QUERY_URI: &str = "/xpay/query_order";
 const NOTIFY_URI: &str = "/xpay/notify_provide_goods";
+const REFUND_URI: &str = "/xpay/refund_order";
+/// 支付签名校验失败。这两种不能当成「订单不存在」。
+const PAY_SIG_ERR_A: i64 = 268490001;
+const PAY_SIG_ERR_B: i64 = 268490003;
 
 #[derive(Clone, Default)]
 pub struct AccessTokenStore {
@@ -106,8 +110,18 @@ pub struct DeliverPush {
     pub transaction_id: String,
 }
 
+#[derive(Debug)]
+pub struct RefundPush {
+    pub out_trade_no: String,
+    pub refund_order_id: String,
+    pub openid: String,
+    pub refund_fee: i64,
+    pub success: bool,
+}
+
 pub enum ParsedPush {
     Deliver(DeliverPush),
+    Refund(RefundPush),
     Ignored { event: String },
 }
 
@@ -142,6 +156,39 @@ struct ProvideBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     wx_order_id: Option<&'a str>,
     env: u8,
+}
+
+/// 字段顺序参与 pay_sig，不要重排。
+#[derive(Serialize)]
+struct RefundBody<'a> {
+    openid: &'a str,
+    order_id: &'a str,
+    refund_order_id: &'a str,
+    left_fee: i64,
+    refund_fee: i64,
+    biz_meta: &'a str,
+    refund_reason: &'a str,
+    req_from: &'a str,
+    env: u8,
+}
+
+#[derive(Debug)]
+pub struct CashOrder {
+    pub status: i64,
+    pub left_fee: Option<i64>,
+    pub order_fee: Option<i64>,
+    pub paid_fee: Option<i64>,
+    pub env_matches: bool,
+}
+
+pub enum CashLookup {
+    Found(CashOrder),
+    NotFound,
+}
+
+pub struct RefundLaunch {
+    pub errcode: i64,
+    pub refund_wx_order_id: String,
 }
 
 pub fn virtual_mode(config: &Config) -> VirtualMode {
@@ -258,10 +305,126 @@ pub async fn query_order(
         order_id: out_trade_no,
     })
     .map_err(|err| AppError::Internal(err.into()))?;
-    let pay_sig = pay_sig(creds.app_key.as_str(), QUERY_URI, &body)
+    let (status, bytes) = post_xpay(state, creds, QUERY_URI, body).await?;
+    if !status.is_success() {
+        tracing::warn!(http = status.as_u16(), "virtual query http failed");
+        return Err(AppError::ServiceUnavailable("查询虚拟支付订单失败".into()));
+    }
+    interpret_query(&bytes, creds.env, out_trade_no)
+}
+
+pub async fn lookup_cash_order(
+    state: &AppState,
+    creds: &VirtualCreds,
+    openid: &str,
+    order_id: &str,
+) -> AppResult<CashLookup> {
+    if openid.is_empty() || order_id.is_empty() {
+        return Err(AppError::BadRequest("查单参数无效".into()));
+    }
+    let body = serde_json::to_string(&QueryBody {
+        openid,
+        env: creds.env,
+        order_id,
+    })
+    .map_err(|err| AppError::Internal(err.into()))?;
+    let (status, bytes) = post_xpay(state, creds, QUERY_URI, body).await?;
+    if !status.is_success() {
+        tracing::warn!(http = status.as_u16(), "virtual lookup http failed");
+        return Err(AppError::ServiceUnavailable("查询虚拟支付订单失败".into()));
+    }
+    interpret_lookup(&bytes, creds.env)
+}
+
+/// 启动整单退款任务。`errcode == 0` 只表示微信受理，不表示钱已退回。
+pub async fn launch_refund(
+    state: &AppState,
+    creds: &VirtualCreds,
+    openid: &str,
+    out_trade_no: &str,
+    refund_order_id: &str,
+    left_fee: i64,
+    biz_meta: &str,
+) -> AppResult<RefundLaunch> {
+    if openid.is_empty()
+        || !valid_out_trade_no(out_trade_no)
+        || !valid_refund_order_id(refund_order_id)
+    {
+        return Err(AppError::BadRequest("退款参数无效".into()));
+    }
+    if left_fee <= 0 {
+        return Err(AppError::BadRequest("没有可退金额".into()));
+    }
+    let body = refund_body_json(
+        openid,
+        out_trade_no,
+        refund_order_id,
+        left_fee,
+        left_fee,
+        biz_meta,
+        creds.env,
+    )?;
+    let (status, bytes) = post_xpay(state, creds, REFUND_URI, body).await?;
+    if !status.is_success() {
+        tracing::warn!(http = status.as_u16(), "virtual refund http failed");
+        return Err(AppError::ServiceUnavailable("微信退款请求失败".into()));
+    }
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::ServiceUnavailable("微信退款响应无法解析".into()))?;
+    let errcode = value.get("errcode").and_then(json_i64).unwrap_or(0);
+    if errcode == PAY_SIG_ERR_A || errcode == PAY_SIG_ERR_B {
+        tracing::warn!(errcode, "virtual refund signature rejected");
+        return Err(AppError::ServiceUnavailable("微信退款签名被拒绝".into()));
+    }
+    if errcode != 0 {
+        tracing::warn!(errcode, "virtual refund not accepted");
+    }
+    Ok(RefundLaunch {
+        errcode,
+        refund_wx_order_id: json_string(&value, &["refund_wx_order_id", "refundWxOrderId"]),
+    })
+}
+
+pub fn valid_refund_order_id(value: &str) -> bool {
+    (8..=32).contains(&value.len())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn refund_body_json(
+    openid: &str,
+    out_trade_no: &str,
+    refund_order_id: &str,
+    left_fee: i64,
+    refund_fee: i64,
+    biz_meta: &str,
+    env: u8,
+) -> AppResult<String> {
+    serde_json::to_string(&RefundBody {
+        openid,
+        order_id: out_trade_no,
+        refund_order_id,
+        left_fee,
+        refund_fee,
+        biz_meta,
+        refund_reason: "2",
+        req_from: "1",
+        env,
+    })
+    .map_err(|err| AppError::Internal(err.into()))
+}
+
+async fn post_xpay(
+    state: &AppState,
+    creds: &VirtualCreds,
+    uri: &str,
+    body: String,
+) -> AppResult<(reqwest::StatusCode, Vec<u8>)> {
+    let pay_sig = pay_sig(creds.app_key.as_str(), uri, &body)
         .map_err(|_| AppError::ServiceUnavailable("虚拟支付签名失败".into()))?;
     let token = access_token(state, creds).await?;
-    let url = format!("{}/xpay/query_order", creds.api_base.trim_end_matches('/'));
+    let url = format!("{}{uri}", creds.api_base.trim_end_matches('/'));
     let resp = http_client()?
         .post(url)
         .query(&[
@@ -275,11 +438,7 @@ pub async fn query_order(
         .map_err(transport_unavailable)?;
     let status = resp.status();
     let bytes = read_limited(resp).await?;
-    if !status.is_success() {
-        tracing::warn!(http = status.as_u16(), "virtual query http failed");
-        return Err(AppError::ServiceUnavailable("查询虚拟支付订单失败".into()));
-    }
-    interpret_query(&bytes, creds.env, out_trade_no)
+    Ok((status, bytes))
 }
 
 pub async fn notify_delivered(
@@ -295,26 +454,7 @@ pub async fn notify_delivered(
         env: creds.env,
     })
     .map_err(|err| AppError::Internal(err.into()))?;
-    let pay_sig = pay_sig(creds.app_key.as_str(), NOTIFY_URI, &body)
-        .map_err(|_| AppError::ServiceUnavailable("虚拟支付签名失败".into()))?;
-    let token = access_token(state, creds).await?;
-    let url = format!(
-        "{}/xpay/notify_provide_goods",
-        creds.api_base.trim_end_matches('/')
-    );
-    let resp = http_client()?
-        .post(url)
-        .query(&[
-            ("access_token", token.as_str()),
-            ("pay_sig", pay_sig.as_str()),
-        ])
-        .header("Content-Type", "application/json")
-        .body(body)
-        .send()
-        .await
-        .map_err(transport_unavailable)?;
-    let status = resp.status();
-    let bytes = read_limited(resp).await?;
+    let (status, bytes) = post_xpay(state, creds, NOTIFY_URI, body).await?;
     if !status.is_success() {
         return Err(AppError::ServiceUnavailable("通知微信发货失败".into()));
     }
@@ -333,7 +473,7 @@ fn interpret_query(bytes: &[u8], env: u8, out_trade_no: &str) -> AppResult<Query
     let value: Value = serde_json::from_slice(bytes)
         .map_err(|_| AppError::BadRequest("虚拟支付查单响应无法解析".into()))?;
     let errcode = value.get("errcode").and_then(|v| v.as_i64()).unwrap_or(0);
-    if errcode == 268490003 || errcode == 268490001 {
+    if errcode == PAY_SIG_ERR_A || errcode == PAY_SIG_ERR_B {
         tracing::warn!(errcode, "virtual query rejected");
         return Err(AppError::ServiceUnavailable("查询虚拟支付订单失败".into()));
     }
@@ -372,6 +512,29 @@ fn interpret_query(bytes: &[u8], env: u8, out_trade_no: &str) -> AppResult<Query
         wx_order_id,
         order_fee: order.get("order_fee").and_then(json_i64),
         paid_fee: order.get("paid_fee").and_then(json_i64),
+    }))
+}
+
+fn interpret_lookup(bytes: &[u8], env: u8) -> AppResult<CashLookup> {
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|_| AppError::BadRequest("虚拟支付查单响应无法解析".into()))?;
+    let errcode = value.get("errcode").and_then(json_i64).unwrap_or(0);
+    if errcode == PAY_SIG_ERR_A || errcode == PAY_SIG_ERR_B {
+        tracing::warn!(errcode, "virtual lookup rejected");
+        return Err(AppError::ServiceUnavailable("查询虚拟支付订单失败".into()));
+    }
+    if errcode != 0 {
+        return Ok(CashLookup::NotFound);
+    }
+    let Some(order) = value.get("order").filter(|v| v.is_object()) else {
+        return Ok(CashLookup::NotFound);
+    };
+    Ok(CashLookup::Found(CashOrder {
+        status: order.get("status").and_then(json_i64).unwrap_or(0),
+        left_fee: order.get("left_fee").and_then(json_i64),
+        order_fee: order.get("order_fee").and_then(json_i64),
+        paid_fee: order.get("paid_fee").and_then(json_i64),
+        env_matches: env_type_matches(order.get("env_type").and_then(json_i64), env),
     }))
 }
 
@@ -589,6 +752,9 @@ fn parse_json_push(value: &Value) -> Result<ParsedPush, String> {
     if event.is_empty() {
         return Err("推送缺少 Event".into());
     }
+    if event == "xpay_refund_notify" {
+        return parse_refund_json(value);
+    }
     if event != "xpay_goods_deliver_notify" {
         return Ok(ParsedPush::Ignored { event });
     }
@@ -643,6 +809,9 @@ fn parse_xml_push(text: &str) -> Result<ParsedPush, String> {
     if event.is_empty() {
         return Err("推送缺少 Event".into());
     }
+    if event == "xpay_refund_notify" {
+        return parse_refund_xml(text);
+    }
     if event != "xpay_goods_deliver_notify" {
         return Ok(ParsedPush::Ignored { event });
     }
@@ -691,6 +860,58 @@ fn parse_xml_push(text: &str) -> Result<ParsedPush, String> {
         actual_price,
         attach,
         transaction_id,
+    }))
+}
+
+fn parse_refund_json(value: &Value) -> Result<ParsedPush, String> {
+    let out_trade_no = json_string(
+        value,
+        &["MchOrderId", "mchOrderId", "OutTradeNo", "outTradeNo"],
+    );
+    let refund_order_id = json_string(value, &["MchRefundId", "mchRefundId"]);
+    let openid = json_string(value, &["OpenId", "openId", "openid"]);
+    let Some(ret) = json_i64_at(value, &["RetCode", "retCode"]) else {
+        return Ok(ParsedPush::Ignored {
+            event: "xpay_refund_notify".into(),
+        });
+    };
+    if out_trade_no.is_empty() {
+        return Ok(ParsedPush::Ignored {
+            event: "xpay_refund_notify".into(),
+        });
+    }
+    Ok(ParsedPush::Refund(RefundPush {
+        out_trade_no,
+        refund_order_id,
+        openid,
+        refund_fee: json_i64_at(value, &["RefundFee", "refundFee"]).unwrap_or(0),
+        success: ret == 0,
+    }))
+}
+
+fn parse_refund_xml(text: &str) -> Result<ParsedPush, String> {
+    let out_trade_no = xml_tag(text, "MchOrderId")
+        .filter(|value| !value.is_empty())
+        .or_else(|| xml_tag(text, "OutTradeNo"))
+        .unwrap_or_default();
+    let ret = xml_tag(text, "RetCode").unwrap_or_default();
+    if out_trade_no.is_empty() || ret.is_empty() {
+        return Ok(ParsedPush::Ignored {
+            event: "xpay_refund_notify".into(),
+        });
+    }
+    let ret_code: i64 = ret
+        .parse()
+        .map_err(|_| "退款推送 RetCode 无效".to_string())?;
+    Ok(ParsedPush::Refund(RefundPush {
+        out_trade_no,
+        refund_order_id: xml_tag(text, "MchRefundId").unwrap_or_default(),
+        openid: xml_tag(text, "OpenId").unwrap_or_default(),
+        refund_fee: xml_tag(text, "RefundFee")
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(0),
+        success: ret_code == 0,
     }))
 }
 
@@ -932,6 +1153,43 @@ mod tests {
             ParsedPush::Ignored { event } => assert_eq!(event, "xpay_refund_notify"),
             _ => panic!("ignore"),
         }
+        let refund = br#"{"Event":"xpay_refund_notify","OpenId":"o_user","MchOrderId":"abcdef0123456789abcdef0123456789","MchRefundId":"r0123456789abcdef0123456789abc","RefundFee":600,"RetCode":0}"#;
+        match parse_push(refund).unwrap() {
+            ParsedPush::Refund(push) => {
+                assert!(push.success);
+                assert_eq!(push.refund_fee, 600);
+                assert_eq!(push.out_trade_no, "abcdef0123456789abcdef0123456789");
+            }
+            _ => panic!("refund"),
+        }
+        let failed = br#"{"Event":"xpay_refund_notify","MchOrderId":"abcdef0123456789abcdef0123456789","RetCode":1,"RefundFee":600}"#;
+        match parse_push(failed).unwrap() {
+            ParsedPush::Refund(push) => assert!(!push.success),
+            _ => panic!("refund fail"),
+        }
+    }
+
+    #[test]
+    fn refund_body_keeps_field_order_for_pay_sig() {
+        let body = refund_body_json(
+            "o_user",
+            "abcdef0123456789abcdef0123456789",
+            "r0123456789abcdef0123456789abc",
+            600,
+            600,
+            "order=abcdef0123456789abcdef0123456789",
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            body,
+            "{\"openid\":\"o_user\",\"order_id\":\"abcdef0123456789abcdef0123456789\",\"refund_order_id\":\"r0123456789abcdef0123456789abc\",\"left_fee\":600,\"refund_fee\":600,\"biz_meta\":\"order=abcdef0123456789abcdef0123456789\",\"refund_reason\":\"2\",\"req_from\":\"1\",\"env\":1}"
+        );
+        let sig = pay_sig("12345", REFUND_URI, &body).unwrap();
+        assert_eq!(sig.len(), 64);
+        assert!(valid_refund_order_id("r0123456789abcdef0123456789abc"));
+        assert!(!valid_refund_order_id("short"));
+        assert!(!valid_refund_order_id("bad|id-ok"));
     }
 
     #[test]

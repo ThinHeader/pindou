@@ -4,6 +4,8 @@
 interface ImportMetaEnv {
   readonly VITE_API_BASE?: string
   readonly VITE_WX_LOGIN?: string
+  /** 微信流量主激励视频广告位。留空时不发积分。 */
+  readonly VITE_REWARD_AD_UNIT_ID?: string
 }
 
 interface WxMiniGlobal {

@@ -27,6 +27,7 @@ struct Fake {
     fail_query: Arc<Mutex<bool>>,
     provides: Arc<Mutex<u32>>,
     hits: Arc<Mutex<Vec<String>>>,
+    refunds: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Deserialize)]
@@ -40,11 +41,13 @@ async fn spawn_fake() -> (String, Fake) {
         fail_query: Arc::new(Mutex::new(false)),
         provides: Arc::new(Mutex::new(0)),
         hits: Arc::new(Mutex::new(Vec::new())),
+        refunds: Arc::new(Mutex::new(Vec::new())),
     };
     let app = Router::new()
         .route("/cgi-bin/token", get(token))
         .route("/xpay/query_order", post(query_order))
         .route("/xpay/notify_provide_goods", post(provide))
+        .route("/xpay/refund_order", post(refund_order))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -110,7 +113,35 @@ async fn query_order(
             Json(json!({"errcode": 268490003, "errmsg": "pay_sig"})),
         );
     }
+    if order_id.starts_with('r') {
+        let known = fake
+            .refunds
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|id| id == &order_id);
+        if !known {
+            return (
+                StatusCode::OK,
+                Json(json!({"errcode": 268490002, "errmsg": "missing"})),
+            );
+        }
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "errcode": 0,
+                "order": {
+                    "status": 8,
+                    "order_type": 1,
+                    "refund_fee": 600,
+                    "env_type": 2,
+                    "order_id": order_id
+                }
+            })),
+        );
+    }
     let status = *fake.status.lock().unwrap();
+    let left_fee = if matches!(status, 5 | 8) { 0 } else { 600 };
     (
         StatusCode::OK,
         Json(json!({
@@ -120,10 +151,66 @@ async fn query_order(
                 "status": status,
                 "order_fee": 600,
                 "paid_fee": 600,
+                "left_fee": left_fee,
                 "env_type": 2,
                 "wxpay_order_id": format!("wxpay-{order_id}"),
                 "wx_order_id": format!("wx-{order_id}")
             }
+        })),
+    )
+}
+
+async fn refund_order(
+    State(fake): State<Fake>,
+    Query(query): Query<SignedQuery>,
+    body: Bytes,
+) -> (StatusCode, Json<Value>) {
+    let raw = String::from_utf8_lossy(&body);
+    let expect = hmac_hex(APP_KEY, &format!("/xpay/refund_order&{raw}"));
+    if query.pay_sig != expect {
+        return (
+            StatusCode::OK,
+            Json(json!({"errcode": 268490003, "errmsg": "pay_sig"})),
+        );
+    }
+    let value: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+    let left_fee = value
+        .get("left_fee")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(0);
+    let refund_fee = value
+        .get("refund_fee")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(0);
+    let refund_order_id = value
+        .get("refund_order_id")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .to_string();
+    if left_fee != 600 || refund_fee != 600 || refund_order_id.len() < 8 {
+        fake.hits.lock().unwrap().push("refund-fee".into());
+        return (
+            StatusCode::OK,
+            Json(json!({"errcode": 268490016, "errmsg": "left_fee"})),
+        );
+    }
+    let mut refunds = fake.refunds.lock().unwrap();
+    if !refunds.iter().any(|id| id == &refund_order_id) {
+        refunds.push(refund_order_id.clone());
+    }
+    drop(refunds);
+    *fake.status.lock().unwrap() = 5;
+    fake.hits
+        .lock()
+        .unwrap()
+        .push(format!("refund {refund_order_id}"));
+    (
+        StatusCode::OK,
+        Json(json!({
+            "errcode": 0,
+            "errmsg": "ok",
+            "refund_order_id": refund_order_id,
+            "refund_wx_order_id": "wx-refund-1"
         })),
     )
 }
@@ -160,6 +247,10 @@ fn msg_sig(timestamp: &str, nonce: &str) -> String {
 }
 
 async fn app(api_base: &str) -> (axum::Router, pindou_api::AppState) {
+    app_with(api_base, "").await
+}
+
+async fn app_with(api_base: &str, ops_token: &str) -> (axum::Router, pindou_api::AppState) {
     let mut config = pindou_api::Config::from_env();
     config.pipeline_provider = "mock".into();
     config.force_mock_pay();
@@ -170,6 +261,7 @@ async fn app(api_base: &str) -> (axum::Router, pindou_api::AppState) {
     config.wx_virtual_appkey_sandbox = APP_KEY.into();
     config.wx_virtual_msg_token = MSG_TOKEN.into();
     config.wx_virtual_api_base = api_base.into();
+    config.ops_refund_token = ops_token.into();
     let state = pindou_api::connect(&config)
         .await
         .expect("连接 PostgreSQL 失败，请先启动数据库");
@@ -541,5 +633,187 @@ async fn partial_virtual_config_never_grants() {
         .unwrap_or("")
         .contains("配置不完整"));
     assert!(!denied["message"].as_str().unwrap_or("").contains(APP_KEY));
+    assert_eq!(balance(&app, &token).await, 0);
+}
+
+async fn call_ops(app: &axum::Router, key: &str, ops: &str) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/ops/credit-orders/{key}/refund"))
+        .header("x-ops-token", ops)
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
+async fn pay_virtual(app: &axum::Router, fake: &Fake, token: &str) -> (String, String) {
+    *fake.status.lock().unwrap() = 2;
+    let (status, order) = call(
+        app,
+        "POST",
+        "/api/v1/credits/orders",
+        Some(token),
+        Some(json!({ "pack_code": "small" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    let order_id = order["order_id"].as_str().unwrap().to_string();
+    let out_trade_no = order["out_trade_no"].as_str().unwrap().to_string();
+    let mut paid = Value::Null;
+    for _ in 0..5 {
+        let (status, body) = call(
+            app,
+            "GET",
+            &format!("/api/v1/credits/orders/{order_id}"),
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        paid = body;
+        if paid["status"] == "paid" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    assert_eq!(paid["status"], "paid", "{paid}");
+    (order_id, out_trade_no)
+}
+
+#[tokio::test]
+async fn ops_refund_claws_back_once() {
+    let (api_base, fake) = spawn_fake().await;
+    let (app, state) = app_with(&api_base, "ops-test-token").await;
+    let code = format!("mock:refund-{}", Uuid::new_v4());
+    let token = user_token(&state, &code, true).await;
+
+    let (status, locked) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/ops/credit-orders/{}/refund", Uuid::new_v4()),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{locked}");
+
+    let (order_id, out_trade_no) = pay_virtual(&app, &fake, &token).await;
+    assert_eq!(balance(&app, &token).await, 10);
+
+    let (second_id, _) = pay_virtual(&app, &fake, &token).await;
+    assert_eq!(balance(&app, &token).await, 20);
+    sqlx::query("UPDATE credit_orders SET status = 'created', paid_at = NULL WHERE id = $1")
+        .bind(Uuid::parse_str(&second_id).unwrap())
+        .execute(&state.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE credit_accounts SET balance = balance - 10 WHERE user_id = (SELECT id FROM users WHERE openid = $1)",
+    )
+    .bind(&code)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(balance(&app, &token).await, 10);
+    let (status, unpaid) = call_ops(&app, &second_id, "ops-test-token").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{unpaid}");
+    assert!(unpaid["message"].as_str().unwrap_or("").contains("未支付"));
+    assert!(fake.refunds.lock().unwrap().is_empty());
+
+    let (status, refunded) = call_ops(&app, &out_trade_no, "ops-test-token").await;
+    assert_eq!(status, StatusCode::OK, "{refunded}");
+    assert_eq!(refunded["status"], "refunded");
+    assert_eq!(refunded["delta"], -10);
+    assert_eq!(refunded["balance"], 0);
+    assert!(refunded["message"].as_str().unwrap_or("").contains("扣回"));
+    assert!(!refunded.to_string().contains(APP_KEY));
+    assert_eq!(fake.refunds.lock().unwrap().len(), 1);
+    assert_eq!(balance(&app, &token).await, 0);
+
+    let (status, again) = call_ops(&app, &order_id, "ops-test-token").await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["delta"], 0);
+    assert_eq!(again["status"], "refunded");
+    assert!(again["message"].as_str().unwrap_or("").contains("已退款"));
+    assert_eq!(fake.refunds.lock().unwrap().len(), 1);
+
+    let (third_id, _) = pay_virtual(&app, &fake, &token).await;
+    assert_eq!(balance(&app, &token).await, 10);
+    sqlx::query(
+        "UPDATE credit_accounts SET balance = 3 WHERE user_id = (SELECT id FROM users WHERE openid = $1)",
+    )
+    .bind(&code)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let (status, partial) = call_ops(&app, &third_id, "ops-test-token").await;
+    assert_eq!(status, StatusCode::OK, "{partial}");
+    assert_eq!(partial["delta"], -3);
+    assert_eq!(partial["balance"], 0);
+    assert!(partial["message"].as_str().unwrap_or("").contains("未扣满"));
+    assert_eq!(fake.refunds.lock().unwrap().len(), 2);
+
+    let (_, fourth_no) = pay_virtual(&app, &fake, &token).await;
+    assert_eq!(balance(&app, &token).await, 10);
+    let ts = "1710000001";
+    let nonce = "refundNonce";
+    let sig = msg_sig(ts, nonce);
+    let (status, failed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/pay/virtual/notify?signature={sig}&timestamp={ts}&nonce={nonce}"),
+        None,
+        Some(json!({
+            "Event": "xpay_refund_notify",
+            "OpenId": code,
+            "MchOrderId": fourth_no,
+            "MchRefundId": "r0123456789abcdef0123456789abc",
+            "RefundFee": 600,
+            "RetCode": 1
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{failed}");
+    assert_eq!(failed["ErrCode"], 0);
+    assert_eq!(balance(&app, &token).await, 10);
+
+    let (status, noted) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/pay/virtual/notify?signature={sig}&timestamp={ts}&nonce={nonce}"),
+        None,
+        Some(json!({
+            "Event": "xpay_refund_notify",
+            "OpenId": code,
+            "MchOrderId": fourth_no,
+            "MchRefundId": "r0123456789abcdef0123456789abc",
+            "RefundFee": 600,
+            "RetCode": 0
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{noted}");
+    assert_eq!(noted["ErrCode"], 0);
+    assert_eq!(balance(&app, &token).await, 0);
+    let (status, replay) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/pay/virtual/notify?signature={sig}&timestamp={ts}&nonce={nonce}"),
+        None,
+        Some(json!({
+            "Event": "xpay_refund_notify",
+            "OpenId": code,
+            "MchOrderId": fourth_no,
+            "RetCode": 0,
+            "RefundFee": 600
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["ErrCode"], 0);
     assert_eq!(balance(&app, &token).await, 0);
 }

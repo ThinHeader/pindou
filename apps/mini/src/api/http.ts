@@ -186,7 +186,6 @@ export const authApi = {
 
 export const creditsApi = {
   me: () => http.get<CreditsMe>('/api/v1/credits/me'),
-  dailyClaim: () => http.post<CreditsMutation>('/api/v1/credits/daily-claim'),
   adReward: () => http.post<CreditsMutation>('/api/v1/credits/ad-reward'),
   ledger: () => http.get<{ items: LedgerItem[] }>('/api/v1/credits/ledger'),
   packs: () =>

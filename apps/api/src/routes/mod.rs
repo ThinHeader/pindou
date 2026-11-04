@@ -7,6 +7,7 @@ pub mod files;
 pub mod health;
 pub mod jobs;
 pub mod me;
+pub mod ops;
 pub mod plaza;
 pub mod uploads;
 
@@ -19,6 +20,7 @@ pub fn api_v1() -> Router<AppState> {
         .merge(auth::router())
         .merge(me::router())
         .merge(credits::router())
+        .merge(ops::router())
         .merge(uploads::router())
         .merge(drafts::router())
         .merge(jobs::router())

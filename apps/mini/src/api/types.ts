@@ -20,10 +20,9 @@ export interface LoginResult {
 
 export interface CreditsMe {
   balance: number
-  daily_grant: number
   generate_cost: number
   ad_reward: number
-  daily_claimed_today: boolean
+  ad_claimed_today: boolean
 }
 
 export interface CreditsMutation {

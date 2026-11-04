@@ -1,14 +1,27 @@
 <script setup lang="ts">
 import { useCreditsStore } from '../stores/credits'
+import { errorOf } from '../api/http'
+import { playRewardedVideo } from '../utils/reward-ad'
 import { showError, showTip } from '../utils/ui'
 
 const credits = useCreditsStore()
 
 async function watchAd() {
+  if (credits.adClaimed) {
+    showTip('今日已领取广告奖励')
+    return
+  }
   try {
+    await playRewardedVideo()
     await credits.claimAdReward()
     showTip(`广告奖励 +${credits.adReward}`)
   } catch (e) {
+    const err = errorOf(e)
+    if (err.error === 'already_claimed') {
+      credits.adClaimed = true
+      showTip(err.message || '今日已领取')
+      return
+    }
     showError(e, '广告奖励失败')
   }
 }
@@ -26,7 +39,9 @@ function goRecharge() {
       <text class="desc">
         当前余额 {{ credits.balance }} · 本次出稿一次性扣除 {{ credits.generateCost }} 积分（含 AI 出稿与拼豆像素）。可看激励广告或充值后再试。
       </text>
-      <view class="btn primary" @click="watchAd">看广告得 {{ credits.adReward }} 积分</view>
+      <view class="btn primary" @click="watchAd">
+        {{ credits.adClaimed ? '今日已看过广告' : `看广告得 ${credits.adReward} 积分` }}
+      </view>
       <view class="btn soft" @click="goRecharge">充值积分</view>
       <view class="btn ghost" @click="credits.closeEmptySheet()">稍后再说</view>
     </view>
