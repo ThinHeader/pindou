@@ -1,7 +1,7 @@
 {
   "name": "拼豆",
   "appid": "__UNI__PINDOU",
-  "description": "拼豆色号稿小程序",
+  "description": "上传照片，按珠板规格生成拼豆色号图",
   "versionName": "0.1.0",
   "versionCode": "100",
   "transformPx": false,

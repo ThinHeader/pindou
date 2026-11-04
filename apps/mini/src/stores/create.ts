@@ -18,7 +18,7 @@ export const useCreateStore = defineStore('create', {
     boardSize: 52 as BoardSize,
     colorCount: 12,
     palettePref: 'auto' as PalettePref,
-    /** 只写入稿件标签，不改变 Seedream 提示词。 */
+    /** 只写入稿件上的主体标签。 */
     subjectType: 'person' as SubjectType,
     paletteBrand: 'generic' as PaletteBrand,
     /** 本次出稿要保存的稿件名。空则交给后端默认名。 */

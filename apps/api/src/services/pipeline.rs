@@ -108,7 +108,7 @@ pub async fn enqueue(state: &AppState, user_id: Uuid, input: GenerateInput) -> A
 
     let job_id = Uuid::new_v4();
     let (original_key, owned) = persist_original(state, &input, job_id, &bytes).await?;
-    let (status, progress, message) = ("seedream", 36, "AI 出稿中");
+    let (status, progress, message) = ("seedream", 36, "正在整理色块");
 
     let inserted = sqlx::query(
         r#"
@@ -204,7 +204,7 @@ async fn run_inner(state: &AppState, job_id: Uuid) -> Result<(), Fail> {
     let brand = Brand::parse(&row.palette_brand).unwrap_or(Brand::Generic);
     let source_bytes = read_object(state, &original_key, "upload").await?;
 
-    if !advance(state, job_id, "seedream", 48, "AI 出稿中").await? {
+    if !advance(state, job_id, "seedream", 48, "正在整理色块").await? {
         return Ok(());
     }
     let stylized = match row.provider.as_str() {
@@ -661,7 +661,7 @@ struct StageSnap {
 fn build_stages(row: &StageSnap) -> Vec<StageView> {
     const IDS: [(&str, &str); 3] = [
         ("upload", "上传原图"),
-        ("seedream", "AI 出稿"),
+        ("seedream", "色块整理"),
         ("pixel", "拼豆像素"),
     ];
     let terminal_fail = matches!(row.status.as_str(), "failed" | "cancelled");
@@ -709,7 +709,7 @@ fn build_stages(row: &StageSnap) -> Vec<StageView> {
 fn stage_index(status: &str) -> Option<usize> {
     match status {
         "queued" | "upload" => Some(0),
-        // 旧任务停在去背或卡通时，进度条落在现在的 AI 出稿这一步。
+        // 旧任务停在去背或卡通时，进度条落在现在的色块整理这一步。
         "matting" | "cartoon" | "seedream" => Some(1),
         "pixel" => Some(2),
         _ => None,
@@ -725,16 +725,16 @@ fn stage_detail(id: &str, state: &str, row: &StageSnap, terminal_fail: bool) -> 
         ("upload", "fail") => fail_detail(row),
         ("seedream", "active") => {
             if mock {
-                "开发模拟出稿中".into()
+                "本地整理色块".into()
             } else {
-                "Seedream Flash 出稿中".into()
+                "正在整理色块".into()
             }
         }
         ("seedream", "done") => {
             if mock {
-                "开发模拟出稿完成".into()
+                "本地色块已整理".into()
             } else {
-                "Seedream Flash 出稿完成".into()
+                "色块已整理".into()
             }
         }
         ("seedream", "fail") => fail_detail(row),
@@ -742,7 +742,7 @@ fn stage_detail(id: &str, state: &str, row: &StageSnap, terminal_fail: bool) -> 
             if terminal_fail {
                 "未开始".into()
             } else {
-                "等待 AI 出稿".into()
+                "等待整理色块".into()
             }
         }
         ("pixel", "done") => format!("完成 · {board}"),
@@ -843,7 +843,7 @@ mod tests {
             failed_stage: failed.map(str::to_string),
             provider: "mock".into(),
             board_size: board,
-            error_message: Some("AI 出稿超时了。本次未扣积分。".into()),
+            error_message: Some("出稿超时了。本次未扣积分。".into()),
         }
     }
 
@@ -856,8 +856,8 @@ mod tests {
         let stages = build_stages(&snap("seedream", None, 78));
         assert_eq!(states(&stages), ["done", "active", "pending"]);
         assert_eq!(stages[1].id, "seedream");
-        assert_eq!(stages[1].label, "AI 出稿");
-        assert_eq!(stages[1].detail, "开发模拟出稿中");
+        assert_eq!(stages[1].label, "色块整理");
+        assert_eq!(stages[1].detail, "本地整理色块");
         assert_eq!(stages[2].label, "拼豆像素");
         assert_eq!(stages[2].detail, "最近邻色号 · 78×78");
     }

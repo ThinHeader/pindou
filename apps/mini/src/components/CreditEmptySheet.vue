@@ -37,7 +37,7 @@ function goRecharge() {
       <view class="handle" />
       <text class="title">积分不足，无法出稿</text>
       <text class="desc">
-        当前余额 {{ credits.balance }} · 本次出稿一次性扣除 {{ credits.generateCost }} 积分（含 AI 出稿与拼豆像素）。可看激励广告或充值后再试。
+        当前余额 {{ credits.balance }} · 本次出稿一次性扣除 {{ credits.generateCost }} 积分（含色块整理与拼豆色号）。可看激励广告或充值后再试。
       </text>
       <view class="btn primary" @click="watchAd">
         {{ credits.adClaimed ? '今日已看过广告' : `看广告得 ${credits.adReward} 积分` }}

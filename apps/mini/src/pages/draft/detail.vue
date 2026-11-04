@@ -123,7 +123,7 @@ function nextBead() {
     </view>
 
     <view v-if="draft.pipeline_lines?.length" class="block">
-      <text class="h">出稿管线</text>
+      <text class="h">处理说明</text>
       <text v-for="line in draft.pipeline_lines" :key="line" class="p">· {{ line }}</text>
     </view>
     <view class="block">

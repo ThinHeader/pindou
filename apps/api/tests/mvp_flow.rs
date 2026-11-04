@@ -775,8 +775,8 @@ async fn mvp_plus_mock_pipeline_tags_and_board_sizes() {
     assert_eq!(job["charged"], true);
     let tags = job["draft"]["pipeline_tags"].as_array().unwrap();
     let tag_text: Vec<&str> = tags.iter().filter_map(|item| item.as_str()).collect();
-    assert!(tag_text.contains(&"开发模拟出稿"), "{tag_text:?}");
-    assert!(tag_text.contains(&"拼豆量化"), "{tag_text:?}");
+    assert!(tag_text.contains(&"本地色块"), "{tag_text:?}");
+    assert!(tag_text.contains(&"拼豆色号"), "{tag_text:?}");
     assert!(tag_text.contains(&"宠物"), "{tag_text:?}");
     assert!(
         !tag_text
@@ -787,7 +787,7 @@ async fn mvp_plus_mock_pipeline_tags_and_board_sizes() {
     let lines = job["draft"]["pipeline_lines"].as_array().unwrap();
     assert!(lines
         .iter()
-        .any(|line| line.as_str().unwrap_or("").contains("开发模拟出稿")));
+        .any(|line| line.as_str().unwrap_or("").contains("本地色块")));
     assert!(lines
         .iter()
         .any(|line| line.as_str().unwrap_or("").contains("52×52")));
@@ -937,10 +937,14 @@ async fn provider_switch_charges_only_when_mock_succeeds() {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{provider} {denied}");
         let message = denied["message"].as_str().unwrap_or("");
-        assert!(message.contains("ARK_API_KEY"), "{provider} {denied}");
         if provider == "aliyun" {
-            assert!(message.contains("视觉智能"), "{denied}");
+            assert!(message.contains("已停用"), "{denied}");
+        } else {
+            assert!(message.contains("未就绪"), "{denied}");
         }
+        assert!(!message.contains("ARK_API_KEY"), "{denied}");
+        assert!(!message.contains("视觉智能"), "{denied}");
+        assert!(!message.to_lowercase().contains("seedream"), "{denied}");
         let (status, still) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
         assert_eq!(status, StatusCode::OK, "{still}");
         assert_eq!(still["balance"], 1, "{provider} 失败不应扣分 {still}");

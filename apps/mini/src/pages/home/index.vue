@@ -63,7 +63,7 @@ function stockSoon() {
       <text class="cta-ico">📷</text>
       <view class="cta-txt">
         <text class="cta-title">拍照出稿</text>
-        <text class="cta-sub">AI 出稿再拼豆</text>
+        <text class="cta-sub">一键转拼豆稿</text>
       </view>
       <text class="cta-arrow">›</text>
     </view>

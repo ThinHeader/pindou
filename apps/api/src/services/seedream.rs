@@ -76,7 +76,7 @@ pub enum SeedreamError {
 impl SeedreamError {
     pub fn into_message(self) -> String {
         let text = match self {
-            Self::Timeout => "AI 出稿超时了。本次未扣积分，可直接重试。".into(),
+            Self::Timeout => "出稿超时了。本次未扣积分，可直接重试。".into(),
             Self::Remote { message, .. } => {
                 if message.contains("未扣积分") {
                     message
@@ -84,10 +84,8 @@ impl SeedreamError {
                     format!("{message} 本次未扣积分。")
                 }
             }
-            Self::Decode => "AI 出稿返回的图片无法解析。本次未扣积分。".into(),
-            Self::Unconfigured => {
-                "未配置 ARK_API_KEY。本次未扣积分。不要使用阿里云视觉智能的 AccessKey。".into()
-            }
+            Self::Decode => "出稿结果无法解析。本次未扣积分。".into(),
+            Self::Unconfigured => "出稿服务未就绪。本次未扣积分。".into(),
         };
         text
     }
@@ -107,7 +105,7 @@ pub fn http_client() -> Result<reqwest::Client, SeedreamError> {
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|_| SeedreamError::Remote {
-            message: "无法发起方舟请求".into(),
+            message: "出稿服务暂时不可用。本次未扣积分。".into(),
             retryable: false,
         })
 }
@@ -173,7 +171,7 @@ pub async fn run_ark(
         }
     }
     Err(last.unwrap_or(SeedreamError::Remote {
-        message: "AI 出稿失败，请稍后重试".into(),
+        message: "出稿失败，请稍后重试。本次未扣积分。".into(),
         retryable: false,
     }))
 }
@@ -236,11 +234,11 @@ pub fn pipeline_tags(pipeline: &str, provider: &str, subject: &str) -> Vec<Strin
     }
     let mut tags = Vec::new();
     tags.push(match provider {
-        "mock" => "开发模拟出稿".to_string(),
-        "aliyun" => "历史 · 阿里云".to_string(),
-        _ => "Seedream 出稿".to_string(),
+        "mock" => "本地色块".to_string(),
+        "aliyun" => "历史稿".to_string(),
+        _ => "色块整理".to_string(),
     });
-    tags.push("拼豆量化".into());
+    tags.push("拼豆色号".into());
     tags.push(subject_label(subject).into());
     tags
 }
@@ -256,14 +254,14 @@ pub fn pipeline_lines(
         return Vec::new();
     }
     let stylize = match provider {
-        "mock" => "开发模拟出稿 · 透明平涂（未请求方舟）".to_string(),
-        "aliyun" => "历史稿 · 阿里云视觉（已停用）".to_string(),
-        _ => "火山方舟 Seedream Flash · 平涂插画".to_string(),
+        "mock" => "本地色块 · 按照片收成色块".to_string(),
+        "aliyun" => "历史稿 · 旧版处理已停用".to_string(),
+        _ => "色块整理 · 按照片收成色块".to_string(),
     };
     let mut lines = vec![
         stylize,
         format!(
-            "自研最近邻 · {board_size}×{board_size} · {}",
+            "最近邻色号 · {board_size}×{board_size} · {}",
             pref_label(pref)
         ),
     ];
@@ -291,7 +289,10 @@ async fn post_generation(
     if status.as_u16() == 429 || status.is_server_error() {
         tracing::warn!(status = %status, "方舟出稿暂时失败");
         return Err(SeedreamError::Remote {
-            message: format!("AI 出稿服务繁忙（{}），请稍后重试", status.as_u16()),
+            message: format!(
+                "出稿服务繁忙（{}），请稍后重试。本次未扣积分。",
+                status.as_u16()
+            ),
             retryable: true,
         });
     }
@@ -346,14 +347,14 @@ async fn download_image(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, Se
     let downloaded = http.get(url).send().await.map_err(map_http)?;
     if !downloaded.status().is_success() {
         return Err(SeedreamError::Remote {
-            message: "AI 出稿结果下载失败".into(),
+            message: "出稿结果下载失败。本次未扣积分。".into(),
             retryable: downloaded.status().is_server_error(),
         });
     }
     let bytes = downloaded.bytes().await.map_err(map_http)?;
     if bytes.len() > 8 * 1024 * 1024 {
         return Err(SeedreamError::Remote {
-            message: "AI 出稿结果过大".into(),
+            message: "出稿结果过大。本次未扣积分。".into(),
             retryable: false,
         });
     }
@@ -364,9 +365,9 @@ fn map_http(err: reqwest::Error) -> SeedreamError {
     if err.is_timeout() {
         SeedreamError::Timeout
     } else {
-        tracing::warn!(error = %err, "方舟请求失败");
+        tracing::warn!(error = %err, "出稿请求失败");
         SeedreamError::Remote {
-            message: "AI 出稿失败，请稍后重试".into(),
+            message: "出稿失败，请稍后重试。本次未扣积分。".into(),
             retryable: false,
         }
     }
@@ -384,17 +385,12 @@ fn remote_from(value: &Value) -> SeedreamError {
         .unwrap_or("");
     let text = if msg.is_empty() { code } else { msg };
     let short: String = text.chars().take(80).collect();
-    if short.is_empty() {
-        SeedreamError::Remote {
-            message: "AI 出稿失败，请稍后重试".into(),
-            retryable: false,
-        }
-    } else {
-        tracing::warn!(code, message = %short, "方舟返回错误");
-        SeedreamError::Remote {
-            message: format!("AI 出稿失败：{short}"),
-            retryable: false,
-        }
+    if !short.is_empty() {
+        tracing::warn!(code, message = %short, "出稿上游返回错误");
+    }
+    SeedreamError::Remote {
+        message: "出稿失败，请稍后重试。本次未扣积分。".into(),
+        retryable: false,
     }
 }
 
@@ -419,7 +415,7 @@ fn ensure_png(bytes: &[u8]) -> Result<Vec<u8>, SeedreamError> {
         || rgba.width() as u64 * rgba.height() as u64 > 16_000_000
     {
         return Err(SeedreamError::Remote {
-            message: "AI 出稿结果尺寸异常".into(),
+            message: "出稿结果尺寸异常。本次未扣积分。".into(),
             retryable: false,
         });
     }
@@ -566,17 +562,50 @@ mod tests {
     }
 
     #[test]
+    fn upstream_error_text_stays_off_the_client_message() {
+        let err = remote_from(&json!({
+            "error": {
+                "code": "InvalidParameter",
+                "message": "the model doubao-seedream does not exist"
+            }
+        }));
+        let text = err.into_message();
+        assert_eq!(text, "出稿失败，请稍后重试。本次未扣积分。");
+        assert!(!text.to_lowercase().contains("seedream"));
+        assert!(!text.contains("doubao"));
+        assert!(!text.contains("InvalidParameter"));
+    }
+
+    #[test]
     fn tags_name_seedream_or_mock_not_aliyun_matting() {
         let mock = pipeline_tags("mvp_plus", "mock", "pet");
-        assert_eq!(mock[0], "开发模拟出稿");
-        assert!(mock.iter().any(|tag| tag == "拼豆量化"));
+        assert_eq!(mock[0], "本地色块");
+        assert!(mock.iter().any(|tag| tag == "拼豆色号"));
         assert!(mock.iter().any(|tag| tag == "宠物"));
         assert!(!mock
             .iter()
             .any(|tag| tag.contains("去背") || tag.contains("卡通")));
         let live = pipeline_lines("mvp_plus", "seedream", "warm", "shop", 78);
-        assert!(live[0].contains("Seedream"));
+        assert!(live[0].contains("色块整理"));
+        assert!(!live[0].contains("Seedream"));
         assert!(live[1].contains("78×78"));
         assert!(live.iter().any(|line| line.contains("店内色卡")));
+        let shown = format!(
+            "{} {}",
+            pipeline_tags("mvp_plus", "seedream", "person").join(" "),
+            pipeline_lines("mvp_plus", "aliyun", "auto", "generic", 52).join(" ")
+        );
+        for banned in [
+            "AI",
+            "Seedream",
+            "豆包",
+            "方舟",
+            "智能",
+            "插画",
+            "阿里云",
+            "大模型",
+        ] {
+            assert!(!shown.contains(banned), "{banned} in {shown}");
+        }
     }
 }
