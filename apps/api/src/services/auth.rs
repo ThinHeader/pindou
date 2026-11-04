@@ -45,6 +45,7 @@ struct WxSessionResp {
     errmsg: Option<String>,
 }
 
+/// 登录凭证有效期固定 7 天。小程序只读 payload 的 `exp` 决定是否静默重登。
 pub fn issue_token(secret: &str, user_id: Uuid) -> AppResult<String> {
     let now = Utc::now();
     let claims = Claims {
@@ -276,6 +277,19 @@ impl From<UserRow> for UserRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issued_token_lives_seven_days() {
+        let secret = "test-secret";
+        let token = issue_token(secret, Uuid::new_v4()).unwrap();
+        let data = decode::<Claims>(
+            &token,
+            &DecodingKey::from_secret(secret.as_bytes()),
+            &Validation::new(Algorithm::HS256),
+        )
+        .unwrap();
+        assert_eq!(data.claims.exp - data.claims.iat, 7 * 24 * 60 * 60);
+    }
 
     #[test]
     fn mock_openid_is_stable() {

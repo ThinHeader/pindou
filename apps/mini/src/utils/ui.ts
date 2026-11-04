@@ -2,7 +2,9 @@ import { errorOf } from '../api/http'
 import { useUserStore } from '../stores/user'
 
 export function showError(e: unknown, fallback = '操作失败') {
-  const msg = errorOf(e).message || fallback
+  const err = errorOf(e)
+  if (err.silent) return
+  const msg = err.message || fallback
   if (msg.length > 16) {
     uni.showModal({ title: '提示', content: msg, showCancel: false })
   } else {

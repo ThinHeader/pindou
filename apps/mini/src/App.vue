@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onLaunch } from '@dcloudio/uni-app'
+import { onLaunch, onShow } from '@dcloudio/uni-app'
 import { useCreditsStore } from './stores/credits'
 import { useUserStore } from './stores/user'
 
@@ -8,6 +8,12 @@ onLaunch(() => {
   const credits = useCreditsStore()
   user.hydrate()
   if (user.isLoggedIn) credits.refresh()
+})
+
+onShow(() => {
+  const user = useUserStore()
+  if (!user.token) user.hydrate()
+  void user.ensureFreshSession()
 })
 </script>
 

@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { authApi, errorOf } from '../api/http'
+import { bindSessionRefresh, refreshSessionSingleFlight } from '../api/session'
 import type { MeProfile, UserInfo } from '../api/types'
+import { tokenNeedsRefresh } from '../utils/jwt'
 import { readAvatarBase64 } from '../utils/local-image'
 
 const TOKEN_KEY = 'pindou_token'
@@ -61,6 +63,32 @@ export const useUserStore = defineStore('user', {
         })
       })
     },
+    // 显式登录失败可以退回 dev code。静默续期不行，否则会换成另一个用户，
+    // 并且走不到 code2session，虚拟支付用的 session_key 也不会更新。
+    obtainSilentCode() {
+      const useWx = import.meta.env.VITE_WX_LOGIN === '1'
+      if (!useWx) return Promise.resolve(this.devCode())
+      return new Promise<string>((resolve, reject) => {
+        let settled = false
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const finish = (fn: () => void) => {
+          if (settled) return
+          settled = true
+          if (timer != null) clearTimeout(timer)
+          fn()
+        }
+        timer = setTimeout(() => finish(() => reject(new Error('wx login timeout'))), 8000)
+        uni.login({
+          provider: 'weixin',
+          success: (res) => {
+            const code = res.code?.trim()
+            if (code) finish(() => resolve(code))
+            else finish(() => reject(new Error('empty code')))
+          },
+          fail: () => finish(() => reject(new Error('wx login failed'))),
+        })
+      })
+    },
     async login() {
       const code = await this.obtainCode()
       const data = await authApi.wxLogin(code)
@@ -68,6 +96,50 @@ export const useUserStore = defineStore('user', {
       this.user = data.user
       this.persist()
       return data
+    },
+    // 已登录且 exp 读不出、或剩余不足 2 天时换新 JWT。失败保留旧 token，不弹登录。
+    async ensureFreshSession() {
+      if (!this.token) return
+      if (!tokenNeedsRefresh(this.token)) return
+      await refreshSessionSingleFlight()
+    },
+    async silentRelogin() {
+      if (!this.token) this.hydrate()
+      if (!this.token) return false
+      const previous = this.token
+      try {
+        const code = await this.obtainSilentCode()
+        if (this.token !== previous) return Boolean(this.token)
+        const data = await authApi.wxLogin(code)
+        if (this.token !== previous) return Boolean(this.token)
+        if (!data.token) return false
+        this.token = data.token
+        this.user = data.user
+        this.persist()
+        return true
+      } catch {
+        return Boolean(this.token && this.token !== previous)
+      }
+    },
+    expireSession() {
+      this.logout()
+      let route = ''
+      try {
+        const pages = getCurrentPages()
+        const current = pages[pages.length - 1] as { route?: string } | undefined
+        route = current?.route || ''
+      } catch {
+        route = ''
+      }
+      if (route !== 'pages/login/index' && route !== '/pages/login/index') {
+        uni.navigateTo({
+          url: '/pages/login/index',
+          fail: () => {
+            uni.redirectTo({ url: '/pages/login/index' })
+          },
+        })
+      }
+      uni.showToast({ title: '登录已过期', icon: 'none' })
     },
     async refreshProfile() {
       if (!this.token) return null
@@ -94,6 +166,17 @@ export const useUserStore = defineStore('user', {
     },
   },
 })
+
+bindSessionRefresh(
+  async () => {
+    const user = useUserStore()
+    return user.silentRelogin()
+  },
+  () => {
+    const user = useUserStore()
+    user.expireSession()
+  },
+)
 
 /**
  * #14 的两条路在真机上都进了 fail，请求到不了接口：
