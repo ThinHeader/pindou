@@ -48,6 +48,13 @@ export interface WxPayParams {
   paySign: string
 }
 
+export interface VirtualPayParams {
+  signData: string
+  paySig: string
+  signature: string
+  mode: string
+}
+
 export interface CreditOrder {
   order_id: string
   out_trade_no?: string
@@ -59,6 +66,7 @@ export interface CreditOrder {
   status: string
   mock: boolean
   pay_params?: WxPayParams | null
+  virtual_payment?: VirtualPayParams | null
   balance?: number
 }
 

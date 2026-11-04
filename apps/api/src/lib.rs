@@ -20,8 +20,10 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 pub use config::Config;
-pub use services::credits::china_today;
 #[doc(hidden)]
+pub use services::auth::issue_token;
+pub use services::credits::china_today;
+pub use services::session_seal::seal_session_key_for_tests;
 pub use services::wechat_pay::seal_aead_for_tests;
 pub use state::AppState;
 
@@ -54,8 +56,9 @@ pub async fn connect(config: &Config) -> anyhow::Result<AppState> {
         db: pool,
         storage,
         pay_certs: services::wechat_pay::PlatformCertStore::default(),
+        wx_tokens: services::virtual_pay::AccessTokenStore::default(),
     };
-    tracing::info!("{}", services::wechat_pay::describe_pay_mode(config));
+    tracing::info!("{}", services::credits::describe_checkout(config));
 
     services::seed::seed_if_empty(&state)
         .await

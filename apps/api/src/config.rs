@@ -42,6 +42,23 @@ pub struct Config {
     pub pay_credentials_present: bool,
     /// 私钥文件读失败等加载错误。有值时支付不可用，示意到账同样关闭。
     pub pay_config_error: Option<String>,
+    /// 米大师支付应用 ID（OfferID）。留空表示未启用虚拟支付。
+    pub wx_virtual_offer_id: String,
+    /// 沙箱 AppKey。`env=1` 时使用，不要写入仓库。
+    pub wx_virtual_appkey_sandbox: String,
+    /// 现网 AppKey。`WX_VIRTUAL_ENV=0` 时使用。
+    pub wx_virtual_appkey: String,
+    /// 现网 AppKey 的别名。与 `wx_virtual_appkey` 同时设置时必须相同。
+    pub wx_virtual_appkey_prod: String,
+    /// 空或 `1`：沙箱。`0`：现网。默认沙箱。
+    pub wx_virtual_env: String,
+    pub wx_virtual_product_small: String,
+    pub wx_virtual_product_popular: String,
+    pub wx_virtual_product_large: String,
+    /// 小程序消息推送 Token。留空时发货推送不能验签，只能靠查单入账。
+    pub wx_virtual_msg_token: String,
+    /// 默认 `https://api.weixin.qq.com`。测试可改到本机假微信。
+    pub wx_virtual_api_base: String,
 }
 
 impl std::fmt::Debug for Config {
@@ -79,6 +96,28 @@ impl std::fmt::Debug for Config {
             .field("wechat_pay_api_base", &self.wechat_pay_api_base)
             .field("pay_credentials_present", &self.pay_credentials_present)
             .field("pay_config_error", &self.pay_config_error)
+            .field("wx_virtual_offer_id", &self.wx_virtual_offer_id)
+            .field(
+                "wx_virtual_appkey_sandbox",
+                &redact_set(&self.wx_virtual_appkey_sandbox),
+            )
+            .field("wx_virtual_appkey", &redact_set(&self.wx_virtual_appkey))
+            .field(
+                "wx_virtual_appkey_prod",
+                &redact_set(&self.wx_virtual_appkey_prod),
+            )
+            .field("wx_virtual_env", &self.wx_virtual_env)
+            .field("wx_virtual_product_small", &self.wx_virtual_product_small)
+            .field(
+                "wx_virtual_product_popular",
+                &self.wx_virtual_product_popular,
+            )
+            .field("wx_virtual_product_large", &self.wx_virtual_product_large)
+            .field(
+                "wx_virtual_msg_token",
+                &redact_set(&self.wx_virtual_msg_token),
+            )
+            .field("wx_virtual_api_base", &self.wx_virtual_api_base)
             .finish()
     }
 }
@@ -127,6 +166,23 @@ impl Config {
             },
             pay_credentials_present: false,
             pay_config_error: None,
+            wx_virtual_offer_id: env_trimmed("WX_VIRTUAL_OFFER_ID"),
+            wx_virtual_appkey_sandbox: env_trimmed("WX_VIRTUAL_APPKEY_SANDBOX"),
+            wx_virtual_appkey: env_trimmed("WX_VIRTUAL_APPKEY"),
+            wx_virtual_appkey_prod: env_trimmed("WX_VIRTUAL_APPKEY_PROD"),
+            wx_virtual_env: env_trimmed("WX_VIRTUAL_ENV"),
+            wx_virtual_product_small: env_trimmed("WX_VIRTUAL_PRODUCT_SMALL"),
+            wx_virtual_product_popular: env_trimmed("WX_VIRTUAL_PRODUCT_POPULAR"),
+            wx_virtual_product_large: env_trimmed("WX_VIRTUAL_PRODUCT_LARGE"),
+            wx_virtual_msg_token: env_trimmed("WX_VIRTUAL_MSG_TOKEN"),
+            wx_virtual_api_base: {
+                let raw = env_trimmed("WX_VIRTUAL_API_BASE");
+                if raw.is_empty() {
+                    "https://api.weixin.qq.com".into()
+                } else {
+                    raw
+                }
+            },
         }
         .load_pay_material()
     }
@@ -187,7 +243,7 @@ impl Config {
         }
     }
 
-    /// 集成测试用：丢掉商户参数，强制走开发示意充值，避免打到真微信。
+    /// 集成测试用：丢掉商户参数和虚拟支付参数，强制走开发示意充值，避免打到真微信。
     pub fn force_mock_pay(&mut self) {
         self.wechat_mch_id.clear();
         self.wechat_mch_serial_no.clear();
@@ -198,6 +254,16 @@ impl Config {
         self.wechat_pay_public_key_id.clear();
         self.pay_credentials_present = false;
         self.pay_config_error = None;
+        self.wx_virtual_offer_id.clear();
+        self.wx_virtual_appkey_sandbox.clear();
+        self.wx_virtual_appkey.clear();
+        self.wx_virtual_appkey_prod.clear();
+        self.wx_virtual_env.clear();
+        self.wx_virtual_product_small.clear();
+        self.wx_virtual_product_popular.clear();
+        self.wx_virtual_product_large.clear();
+        self.wx_virtual_msg_token.clear();
+        self.wx_virtual_api_base = "https://api.weixin.qq.com".into();
     }
 
     fn load_pay_material(mut self) -> Self {
