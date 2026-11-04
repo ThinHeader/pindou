@@ -1,7 +1,8 @@
-//! 积分：日领（PostgreSQL 幂等）/ 广告 / 出稿扣减 / 充值。
+//! 积分：激励广告（PostgreSQL 按自然日幂等）/ 出稿扣减 / 充值 / 客诉退款。
 //!
 //! 充值入账只有三条路径：未配置支付时的开发示意回调、验签通过的微信支付结果、
 //! 以及虚拟支付的发货推送或查单。三条路径都锁订单，只在 `created → paid` 时加一次积分。
+//! 每日免费领取已停用。`daily_claims` 只记录激励广告，每个东八区自然日一次。
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::Serialize;
@@ -12,12 +13,11 @@ use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::services::session_seal;
 use crate::services::virtual_pay::{
-    self, DeliverPush, QueryOutcome, VirtualMode, VirtualPayParams,
+    self, CashLookup, DeliverPush, QueryOutcome, RefundPush, VirtualMode, VirtualPayParams,
 };
 use crate::services::wechat_pay::{self, OpenedNotify, PayMode, VerifiedTransaction};
 use crate::state::AppState;
 
-pub const DAILY_GRANT: i32 = 3;
 /// 一次成功的 MVP+ 出稿（Seedream 出稿 + 拼豆量化）只扣这一笔。
 /// 失败或取消不会走到扣减，因此也不另做退款。
 pub const GENERATE_COST: i32 = 1;
@@ -67,10 +67,9 @@ pub const PACKS: &[Pack] = &[
 #[derive(Debug, Serialize)]
 pub struct CreditsView {
     pub balance: i32,
-    pub daily_grant: i32,
     pub generate_cost: i32,
     pub ad_reward: i32,
-    pub daily_claimed_today: bool,
+    pub ad_claimed_today: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -188,6 +187,7 @@ pub fn reason_label(reason: &str) -> &'static str {
         "ad_reward" => "激励广告",
         "generate" => "成功出稿",
         "recharge" => "充值到账",
+        "refund" => "充值退款",
         _ => "积分变动",
     }
 }
@@ -197,24 +197,15 @@ pub async fn view(state: &AppState, user_id: Uuid) -> AppResult<CreditsView> {
     let claimed = claimed_today(&state.db, user_id, china_today()).await?;
     Ok(CreditsView {
         balance,
-        daily_grant: DAILY_GRANT,
         generate_cost: GENERATE_COST,
         ad_reward: AD_REWARD,
-        daily_claimed_today: claimed,
+        ad_claimed_today: claimed,
     })
 }
 
-pub async fn daily_claim(state: &AppState, user_id: Uuid) -> AppResult<CreditMutation> {
+/// 看完激励广告后领取。先由客户端播完，再记一笔；同一东八区自然日只成功一次。
+pub async fn ad_reward(state: &AppState, user_id: Uuid) -> AppResult<CreditMutation> {
     let day = china_today();
-    let balance = grant_daily_in_db(state, user_id, day).await?;
-    Ok(CreditMutation {
-        balance,
-        delta: DAILY_GRANT,
-        reason: "daily_claim".into(),
-    })
-}
-
-async fn grant_daily_in_db(state: &AppState, user_id: Uuid, day: NaiveDate) -> AppResult<i32> {
     let mut tx = state.db.begin().await?;
     let inserted = sqlx::query(
         "INSERT INTO daily_claims (user_id, claim_date) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -226,16 +217,9 @@ async fn grant_daily_in_db(state: &AppState, user_id: Uuid, day: NaiveDate) -> A
     if inserted.rows_affected() == 0 {
         return Err(AppError::conflict(
             "already_claimed",
-            "今日已领取，明天再来吧",
+            "今日激励广告奖励已领取",
         ));
     }
-    let balance = apply_delta_tx(&mut tx, user_id, DAILY_GRANT, "daily_claim", None).await?;
-    tx.commit().await?;
-    Ok(balance)
-}
-
-pub async fn ad_reward(state: &AppState, user_id: Uuid) -> AppResult<CreditMutation> {
-    let mut tx = state.db.begin().await?;
     let balance = apply_delta_tx(&mut tx, user_id, AD_REWARD, "ad_reward", None).await?;
     tx.commit().await?;
     Ok(CreditMutation {
@@ -766,6 +750,462 @@ async fn apply_virtual_grant_once(state: &AppState, grant: &VirtualGrant) -> App
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+pub struct OpsRefund {
+    pub order_id: Uuid,
+    pub out_trade_no: String,
+    pub status: String,
+    pub refund_order_id: Option<String>,
+    pub balance: i32,
+    pub delta: i32,
+    pub message: String,
+}
+
+/// 客诉整单退款。调用方必须先核对运维口令。普通用户 JWT 不能走到这里。
+pub async fn ops_refund_virtual(state: &AppState, key: &str) -> AppResult<OpsRefund> {
+    let order_id =
+        Uuid::parse_str(key.trim()).map_err(|_| AppError::BadRequest("订单号无效".into()))?;
+    let row = order_by_id(&state.db, order_id).await?;
+    if row.pay_channel != "virtual" {
+        return Err(AppError::BadRequest("只有虚拟支付订单可以退款".into()));
+    }
+    let Checkout::Virtual(creds) = checkout_mode(&state.config) else {
+        return Err(AppError::ServiceUnavailable("虚拟支付未启用".into()));
+    };
+    let openid = row
+        .payer_openid
+        .clone()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::BadRequest("订单缺少 openid，无法退款".into()))?;
+
+    if row.status == "refunded" {
+        return refund_view(state, &row, 0, "订单已退款").await;
+    }
+    if row.status == "created" {
+        return Err(AppError::BadRequest("订单未支付，不能退款".into()));
+    }
+    if row.status != "paid" && row.status != "refunding" {
+        return Err(AppError::BadRequest("订单当前不能退款".into()));
+    }
+
+    let payment = virtual_pay::lookup_cash_order(state, &creds, &openid, &row.out_trade_no).await?;
+    ensure_env(&payment)?;
+    if payment_refunded(&payment) {
+        return finish_refund(state, row.id, None).await;
+    }
+    if payment_closed(&payment) {
+        return Err(AppError::BadRequest("微信订单已关闭，不能退款".into()));
+    }
+    if matches!(payment, CashLookup::NotFound) && row.status == "paid" {
+        return Err(AppError::ServiceUnavailable("微信侧查不到这笔订单".into()));
+    }
+
+    let working = ensure_refunding(state, row.id).await?;
+    if working.status == "refunded" {
+        return refund_view(state, &working, 0, "订单已退款").await;
+    }
+    let refund_order_id = working
+        .refund_order_id
+        .clone()
+        .filter(|value| virtual_pay::valid_refund_order_id(value))
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("退款单号缺失")))?;
+
+    if let Some(done) = poll_refund_order(state, &creds, &openid, &refund_order_id).await? {
+        return Ok(done);
+    }
+
+    let left_fee = refundable_fee(&payment, working.amount_fen as i64)?;
+    let mut launch = virtual_pay::launch_refund(
+        state,
+        &creds,
+        &openid,
+        &working.out_trade_no,
+        &refund_order_id,
+        left_fee,
+        &format!("order={}", working.out_trade_no),
+    )
+    .await?;
+    if launch.errcode == 268490016 {
+        let again =
+            virtual_pay::lookup_cash_order(state, &creds, &openid, &working.out_trade_no).await?;
+        ensure_env(&again)?;
+        if payment_refunded(&again) {
+            return finish_refund(state, working.id, Some(&refund_order_id)).await;
+        }
+        let left_fee = refundable_fee(&again, working.amount_fen as i64)?;
+        launch = virtual_pay::launch_refund(
+            state,
+            &creds,
+            &openid,
+            &working.out_trade_no,
+            &refund_order_id,
+            left_fee,
+            &format!("order={}", working.out_trade_no),
+        )
+        .await?;
+    }
+    if launch.errcode == 0 && !launch.refund_wx_order_id.is_empty() {
+        tracing::info!(
+            refund_wx_order_id = %launch.refund_wx_order_id,
+            out_trade_no = %working.out_trade_no,
+            "virtual refund accepted"
+        );
+    }
+    if launch.errcode != 0 {
+        let payment =
+            virtual_pay::lookup_cash_order(state, &creds, &openid, &working.out_trade_no).await?;
+        if payment_refunded(&payment) {
+            return finish_refund(state, working.id, Some(&refund_order_id)).await;
+        }
+        if let Some(done) = poll_refund_order(state, &creds, &openid, &refund_order_id).await? {
+            return Ok(done);
+        }
+        return Err(AppError::ServiceUnavailable(format!(
+            "微信退款未受理（错误码 {}），请稍后用同一接口重试",
+            launch.errcode
+        )));
+    }
+
+    if let Some(done) = poll_refund_order(state, &creds, &openid, &refund_order_id).await? {
+        return Ok(done);
+    }
+    let balance = balance_of(&state.db, working.user_id).await?;
+    Ok(OpsRefund {
+        order_id: working.id,
+        out_trade_no: working.out_trade_no,
+        status: "refunding".into(),
+        refund_order_id: Some(refund_order_id),
+        balance,
+        delta: 0,
+        message: "退款已提交，到账前请用同一接口再查一次".into(),
+    })
+}
+
+/// 微信退款结果推送。未确认成功时不扣积分。
+pub async fn accept_virtual_refund(
+    state: &AppState,
+    push: &RefundPush,
+    signature_verified: bool,
+) -> AppResult<()> {
+    let Checkout::Virtual(creds) = checkout_mode(&state.config) else {
+        return Err(AppError::Forbidden("虚拟支付未启用".into()));
+    };
+    if !virtual_pay::valid_out_trade_no(&push.out_trade_no) {
+        return Err(AppError::BadRequest("商户订单号无效".into()));
+    }
+    let row = order_by_trade_no(&state.db, &push.out_trade_no).await?;
+    if row.pay_channel != "virtual" {
+        return Err(AppError::BadRequest("订单不是虚拟支付单".into()));
+    }
+    if !push.openid.is_empty() && row.payer_openid.as_deref() != Some(push.openid.as_str()) {
+        return Err(AppError::BadRequest("退款用户与订单不一致".into()));
+    }
+    if let Some(stored) = row.refund_order_id.as_deref() {
+        if !push.refund_order_id.is_empty() && stored != push.refund_order_id {
+            return Err(AppError::BadRequest("退款单号与订单不一致".into()));
+        }
+    }
+    if !push.success {
+        if row.status == "refunding" {
+            reopen_paid(state, row.id).await?;
+        }
+        return Ok(());
+    }
+    if row.status == "refunded" {
+        return Ok(());
+    }
+    if row.status != "paid" && row.status != "refunding" {
+        tracing::info!(status = %row.status, "ignore virtual refund notify");
+        return Ok(());
+    }
+    if push.refund_fee > 0 && push.refund_fee != row.amount_fen as i64 {
+        tracing::warn!(
+            out_trade_no = %row.out_trade_no,
+            refund_fee = push.refund_fee,
+            amount_fen = row.amount_fen,
+            "virtual refund fee differs from order"
+        );
+    }
+    let openid = row.payer_openid.clone().unwrap_or_default();
+    let confirmed = if openid.is_empty() {
+        signature_verified
+    } else {
+        match virtual_pay::lookup_cash_order(state, &creds, &openid, &row.out_trade_no).await {
+            Ok(payment) if payment_refunded(&payment) => true,
+            Ok(_) if signature_verified => true,
+            Err(_) if signature_verified => true,
+            _ => false,
+        }
+    };
+    if !confirmed {
+        return Err(AppError::ServiceUnavailable("退款结果未确认".into()));
+    }
+    let refund_id = if push.refund_order_id.is_empty() {
+        None
+    } else {
+        Some(push.refund_order_id.as_str())
+    };
+    finish_refund(state, row.id, refund_id).await?;
+    Ok(())
+}
+
+async fn poll_refund_order(
+    state: &AppState,
+    creds: &virtual_pay::VirtualCreds,
+    openid: &str,
+    refund_order_id: &str,
+) -> AppResult<Option<OpsRefund>> {
+    match virtual_pay::lookup_cash_order(state, creds, openid, refund_order_id).await? {
+        CashLookup::Found(order) if !order.env_matches => {
+            Err(AppError::BadRequest("退款单环境与当前配置不一致".into()))
+        }
+        CashLookup::Found(order) if matches!(order.status, 5 | 8 | 9 | 10) => {
+            let row = order_by_refund_id(&state.db, refund_order_id).await?;
+            Ok(Some(
+                finish_refund(state, row.id, Some(refund_order_id)).await?,
+            ))
+        }
+        CashLookup::Found(order) if order.status == 7 => {
+            if let Ok(row) = order_by_refund_id(&state.db, refund_order_id).await {
+                reopen_paid(state, row.id).await?;
+            }
+            Err(AppError::conflict(
+                "refund_failed",
+                "微信退款失败，请再试一次",
+            ))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn ensure_env(payment: &CashLookup) -> AppResult<()> {
+    match payment {
+        CashLookup::Found(order) if !order.env_matches => {
+            Err(AppError::BadRequest("支付环境与订单不一致".into()))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn payment_refunded(payment: &CashLookup) -> bool {
+    let CashLookup::Found(order) = payment else {
+        return false;
+    };
+    if !order.env_matches {
+        return false;
+    }
+    if matches!(order.status, 5 | 8 | 9 | 10) {
+        return true;
+    }
+    order.left_fee == Some(0) && matches!(order.status, 2 | 3 | 4 | 7)
+}
+
+fn payment_closed(payment: &CashLookup) -> bool {
+    matches!(payment, CashLookup::Found(order) if order.env_matches && order.status == 6)
+}
+
+fn refundable_fee(payment: &CashLookup, amount_fen: i64) -> AppResult<i64> {
+    let CashLookup::Found(order) = payment else {
+        return Ok(amount_fen);
+    };
+    if !matches!(order.status, 2 | 3 | 4 | 7) {
+        return Err(AppError::BadRequest("微信订单当前不可退款".into()));
+    }
+    let left = order
+        .left_fee
+        .or(order.paid_fee)
+        .or(order.order_fee)
+        .unwrap_or(amount_fen);
+    if left <= 0 {
+        return Err(AppError::BadRequest("没有可退金额".into()));
+    }
+    Ok(left)
+}
+
+async fn ensure_refunding(state: &AppState, order_id: Uuid) -> AppResult<OrderRow> {
+    let mut tx = state.db.begin().await?;
+    let row = lock_order_by_id(&mut tx, order_id).await?;
+    if row.status == "refunded" || (row.status == "refunding" && row.refund_order_id.is_some()) {
+        tx.commit().await?;
+        return order_by_id(&state.db, order_id).await;
+    }
+    if row.status != "paid" && row.status != "refunding" {
+        return Err(AppError::BadRequest("订单当前不能退款".into()));
+    }
+    let refund_order_id = new_refund_order_id();
+    sqlx::query(
+        r#"
+        UPDATE credit_orders
+        SET status = 'refunding', refund_order_id = $2
+        WHERE id = $1 AND status IN ('paid', 'refunding')
+        "#,
+    )
+    .bind(order_id)
+    .bind(&refund_order_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    order_by_id(&state.db, order_id).await
+}
+
+async fn reopen_paid(state: &AppState, order_id: Uuid) -> AppResult<()> {
+    sqlx::query(
+        r#"
+        UPDATE credit_orders
+        SET status = 'paid', refund_order_id = NULL
+        WHERE id = $1 AND status = 'refunding'
+        "#,
+    )
+    .bind(order_id)
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+enum ClawResult {
+    Already {
+        balance: i32,
+    },
+    Done {
+        balance: i32,
+        delta: i32,
+        granted: i32,
+    },
+}
+
+async fn finish_refund(
+    state: &AppState,
+    order_id: Uuid,
+    refund_order_id: Option<&str>,
+) -> AppResult<OpsRefund> {
+    let result = clawback_refund_once(state, order_id, refund_order_id).await?;
+    let fresh = order_by_id(&state.db, order_id).await?;
+    let (balance, delta, message) = match result {
+        ClawResult::Already { balance } => (balance, 0, "订单已退款".to_string()),
+        ClawResult::Done {
+            balance,
+            delta,
+            granted,
+        } => {
+            let message = if delta == 0 {
+                "已退款。账户已无积分可扣".to_string()
+            } else if -delta == granted {
+                format!("已退款，扣回 {} 积分", -delta)
+            } else {
+                format!("已退款，扣回 {} 积分（账户不足，未扣满 {granted}）", -delta)
+            };
+            (balance, delta, message)
+        }
+    };
+    Ok(OpsRefund {
+        order_id: fresh.id,
+        out_trade_no: fresh.out_trade_no,
+        status: fresh.status,
+        refund_order_id: fresh.refund_order_id,
+        balance,
+        delta,
+        message,
+    })
+}
+
+async fn clawback_refund_once(
+    state: &AppState,
+    order_id: Uuid,
+    refund_order_id: Option<&str>,
+) -> AppResult<ClawResult> {
+    let mut tx = state.db.begin().await?;
+    let row = lock_order_by_id(&mut tx, order_id).await?;
+    if row.status == "refunded" {
+        let balance = balance_of_tx(&mut tx, row.user_id).await?;
+        tx.commit().await?;
+        return Ok(ClawResult::Already { balance });
+    }
+    if row.status != "paid" && row.status != "refunding" {
+        return Err(AppError::BadRequest("订单当前不能退款".into()));
+    }
+    let balance = balance_of_tx(&mut tx, row.user_id).await?;
+    let take = row.credits.min(balance);
+    let stored_refund = refund_order_id
+        .filter(|value| !value.is_empty())
+        .or(row.refund_order_id.as_deref());
+    let updated = sqlx::query(
+        r#"
+        UPDATE credit_orders
+        SET status = 'refunded',
+            refunded_at = now(),
+            refund_order_id = COALESCE($2, refund_order_id)
+        WHERE id = $1 AND status IN ('paid', 'refunding')
+        "#,
+    )
+    .bind(order_id)
+    .bind(stored_refund)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_sqlx)?;
+    if updated.rows_affected() == 0 {
+        let balance = balance_of_tx(&mut tx, row.user_id).await?;
+        tx.commit().await?;
+        return Ok(ClawResult::Already { balance });
+    }
+    let next = if take > 0 {
+        apply_delta_tx(
+            &mut tx,
+            row.user_id,
+            -take,
+            "refund",
+            Some(&row.id.to_string()),
+        )
+        .await?
+    } else {
+        balance
+    };
+    tx.commit().await?;
+    tracing::info!(
+        user_id = %row.user_id,
+        order_id = %row.id,
+        taken = take,
+        granted = row.credits,
+        "virtual pay refunded"
+    );
+    Ok(ClawResult::Done {
+        balance: next,
+        delta: -take,
+        granted: row.credits,
+    })
+}
+
+fn new_refund_order_id() -> String {
+    let raw = Uuid::new_v4().simple().to_string();
+    format!("r{}", &raw[..31])
+}
+
+async fn refund_view(
+    state: &AppState,
+    row: &OrderRow,
+    delta: i32,
+    message: &str,
+) -> AppResult<OpsRefund> {
+    let balance = balance_of(&state.db, row.user_id).await?;
+    Ok(OpsRefund {
+        order_id: row.id,
+        out_trade_no: row.out_trade_no.clone(),
+        status: row.status.clone(),
+        refund_order_id: row.refund_order_id.clone(),
+        balance,
+        delta,
+        message: message.into(),
+    })
+}
+
+async fn order_by_refund_id(pool: &PgPool, refund_order_id: &str) -> AppResult<OrderRow> {
+    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE refund_order_id = $1");
+    sqlx::query_as::<_, OrderRow>(&sql)
+        .bind(refund_order_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("退款单不存在".into()))
+}
+
 async fn load_session_key(state: &AppState, user_id: Uuid) -> AppResult<String> {
     let stored: Option<Option<String>> =
         sqlx::query_scalar("SELECT wx_session_key_enc FROM users WHERE id = $1")
@@ -886,7 +1326,7 @@ async fn claimed_today(pool: &PgPool, user_id: Uuid, day: NaiveDate) -> AppResul
     Ok(exists)
 }
 
-const ORDER_COLUMNS: &str = "id, user_id, pack_code, credits, price_cents, amount_fen, status, out_trade_no, transaction_id, payer_openid, pay_channel";
+const ORDER_COLUMNS: &str = "id, user_id, pack_code, credits, price_cents, amount_fen, status, out_trade_no, transaction_id, payer_openid, pay_channel, refund_order_id";
 
 fn order_view(
     row: &OrderRow,
@@ -1010,6 +1450,7 @@ struct OrderRow {
     transaction_id: Option<String>,
     payer_openid: Option<String>,
     pay_channel: String,
+    refund_order_id: Option<String>,
 }
 
 /// 锁内读取余额。供出稿事务复用。
@@ -1063,6 +1504,7 @@ mod tests {
         let sentinel = "sentinel-appkey-not-real";
         config.wx_virtual_appkey_sandbox = sentinel.into();
         config.wx_virtual_msg_token = sentinel.into();
+        config.ops_refund_token = sentinel.into();
         let rendered = format!("{config:?}");
         assert!(!rendered.contains(sentinel));
     }

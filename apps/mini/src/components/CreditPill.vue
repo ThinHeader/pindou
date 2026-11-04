@@ -12,7 +12,7 @@ function goCredits() {
 <template>
   <view class="pill" @click="goCredits">
     <text class="dot">●</text>
-    <text class="txt">{{ compact ? credits.balance : `今日积分 ${credits.balance}` }}</text>
+    <text class="txt">{{ compact ? credits.balance : `积分 ${credits.balance}` }}</text>
   </view>
 </template>
 

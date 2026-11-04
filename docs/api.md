@@ -15,7 +15,8 @@ Base URL（本地）：`http://127.0.0.1:3000`
 | 402 | `insufficient_credits` | 出稿时余额不足 |
 | 403 | `forbidden` | 改、删别人的稿，或改删官方模板 |
 | 404 | `not_found` | 稿件 / 订单不存在 |
-| 409 | `already_claimed` | 今日积分已领 |
+| 409 | `already_claimed` | 今日激励广告奖励已领 |
+| 409 | `refund_failed` | 客诉退款被微信拒绝，可再试 |
 | 410 | `gone` | 作品发布、作品流、点赞、收藏、评论已关闭 |
 
 除健康检查、充值档位、静态文件外，写操作都要带 `Authorization: Bearer <JWT>`。作品发布和作品互动接口不校验登录，直接返回 410。
@@ -75,36 +76,35 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 | 动作 | 变动 |
 |------|------|
-| 每日领取 | +3，自然日（东八区）一次 |
 | 成功出稿 | −1 |
-| 激励广告 | +1，可多次 |
-| 充值 | 见档位。开发示意或微信支付，都只入账一次 |
+| 激励广告 | +1，东八区每个自然日一次 |
+| 充值 | 见档位。开发示意、虚拟支付或微信支付，都只入账一次 |
+| 客诉退款 | 虚拟支付整单退款成功后扣回该档积分（见下文，不对用户开放） |
 
-日领在同一事务里向 `daily_claims` 插入 `(user_id, 东八区今日日期)`；主键冲突则返回 409 `already_claimed`，成功则给账户 +3 并写入 `credit_ledger`。不依赖 Redis。
+每日免费领取已停用，`POST /api/v1/credits/daily-claim` 不存在。激励广告在同一事务里向 `daily_claims` 插入 `(user_id, 东八区今日日期)`；主键冲突则返回 409 `already_claimed`，成功则给账户 +1 并写入 `credit_ledger`（`reason=ad_reward`）。不依赖 Redis。历史流水里的 `daily_claim` 仍显示为「每日领取」。
+
+小程序必须先把激励视频播完（`uni.createRewardedVideoAd` 的 `onClose` 且 `isEnded`）再调用发积分接口。服务端不信客户端之外的凭证，只保证同一用户同一天只入账一次。广告位 ID 放在小程序 `VITE_REWARD_AD_UNIT_ID`，留空时客户端不会请求发积分。
 
 ### `GET /api/v1/credits/me`
 
 ```json
 {
   "balance": 2,
-  "daily_grant": 3,
   "generate_cost": 1,
   "ad_reward": 1,
-  "daily_claimed_today": false
+  "ad_claimed_today": false
 }
 ```
 
-### `POST /api/v1/credits/daily-claim`
-
-`{ "balance": 5, "delta": 3, "reason": "daily_claim" }`
-
 ### `POST /api/v1/credits/ad-reward`
 
-`{ "balance": 3, "delta": 1, "reason": "ad_reward" }`
+需要登录。`{ "balance": 1, "delta": 1, "reason": "ad_reward" }`
+
+当天再领返回 409 `already_claimed`。
 
 ### `GET /api/v1/credits/ledger`
 
-`{ "items": [{ "delta": 3, "reason": "daily_claim", "reason_label": "每日领取", "balance_after": 3, "created_at": "..." }] }`
+`{ "items": [{ "delta": 1, "reason": "ad_reward", "reason_label": "激励广告", "balance_after": 1, "created_at": "..." }] }`
 
 ### `GET /api/v1/credits/packs`
 
@@ -188,7 +188,38 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 - GET：用 `WX_VIRTUAL_MSG_TOKEN` 校验消息推送签名后回显 `echostr`。
 - POST：事件 `xpay_goods_deliver_notify`。配了 Token 时先验签。订单、openid、道具、金额、环境一致后，优先查单确认再入账；查单不可用但推送已验签时，按推送入账。重复通知返回 `{"ErrCode":0,"ErrMsg":"success"}`，不加第二次积分。
-- 签名无效或尚未支付：`ErrCode` 非 0，不加积分。退款类事件只确认收到，不扣回积分。
+- 签名无效或尚未支付：`ErrCode` 非 0，不加积分。
+- `xpay_refund_notify` 且 `RetCode=0`：核对订单后把订单标为 `refunded`，并扣回已发积分（只扣一次）。失败通知不扣积分。字段不全的退款推送只确认收到。
+
+### `POST /api/v1/ops/credit-orders/{key}/refund`
+
+客诉 / 运维退款，**不是**小程序接口。不要放进小程序，也不要接受用户的登录 JWT。
+
+- 请求头 `X-Ops-Token` 必须等于环境变量 `OPS_REFUND_TOKEN`。未配置返回 503。口令错误返回 401，即使带了用户 `Authorization` 也不行。
+- `{key}` 可以是订单 UUID，也可以是 32 位 `out_trade_no`（两者是同一笔订单的两种写法）。
+- 只接受 `pay_channel=virtual` 且已支付的订单。开发示意单和商户 JSAPI 单返回 400。
+- 向微信 `POST /xpay/refund_order` 发起**整单**退款（`refund_fee=left_fee`）。`env`、OfferID、AppKey 与查单相同：沙箱用 `WX_VIRTUAL_APPKEY_SANDBOX`，`env=1`。签名是 AppKey 对 `/xpay/refund_order&` + 请求体的 HMAC-SHA256。`refund_reason=2`（售后），`req_from=1`（人工客服）。
+- 微信这个接口只表示退款任务已启动。服务会再查退款单；状态 5 或 8 才把本地订单改为 `refunded`，并写一条 `refund` 流水扣回积分。账户不够扣时扣到 0，响应里会说明未扣满。
+- 任务还在处理时返回 `status: "refunding"`、`delta: 0`。用同一条命令再调一次即可，不会重复退款，也不会重复扣积分。已经退过的订单再次调用 `delta` 为 0。
+
+```bash
+curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户单号/refund" \
+  -H "X-Ops-Token: $OPS_REFUND_TOKEN"
+```
+
+```json
+{
+  "order_id": "uuid",
+  "out_trade_no": "32 位商户单号",
+  "status": "refunded",
+  "refund_order_id": "r…",
+  "balance": 0,
+  "delta": -10,
+  "message": "已退款，扣回 10 积分"
+}
+```
+
+微信侧前置条件：小程序已开通虚拟支付；沙箱退款要用开发版或体验版的沙箱 AppKey（`WX_VIRTUAL_ENV` 为空或 `1`）。资金管理里待结算的沙箱金额可以退回。正式环境退款需在虚拟支付后台具备退款能力，支付 365 天内可退，超过 180 天平台不退手续费。口令和 AppKey 只放环境变量，不要写进仓库。
 
 ### `POST /api/v1/pay/wechat/notify`
 

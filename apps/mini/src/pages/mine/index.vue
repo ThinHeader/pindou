@@ -37,26 +37,6 @@ function goCreate() {
   uni.switchTab({ url: '/pages/create/index' })
 }
 
-async function claim() {
-  if (!user.isLoggedIn) {
-    goLogin()
-    return
-  }
-  try {
-    const data = await credits.claimDaily()
-    showTip(`已领取今日 ${data.delta} 积分`)
-    await user.refreshProfile()
-  } catch (e) {
-    const err = e as { error?: string; message?: string }
-    if (err.error === 'already_claimed') {
-      credits.dailyClaimed = true
-      showTip(err.message || '今日已领取')
-      return
-    }
-    showError(e, '领取失败')
-  }
-}
-
 </script>
 
 <template>
@@ -80,15 +60,12 @@ async function claim() {
       <view>
         <text class="label">当前积分</text>
         <text class="num">{{ credits.balance }}</text>
-        <text class="rule">日送 {{ credits.dailyGrant }} · 出稿 −{{ credits.generateCost }}/次 · 失败不扣</text>
+        <text class="rule">出稿 −{{ credits.generateCost }}/次 · 激励广告每日 +{{ credits.adReward }} · 失败不扣</text>
       </view>
       <view class="side">
-        <text class="state">{{ credits.dailyClaimed ? '今日已领' : '今日未领' }}</text>
+        <text class="state">{{ credits.adClaimed ? '今日已看广告' : '今日可看广告' }}</text>
         <text class="recharge">去充值</text>
       </view>
-    </view>
-    <view class="claim" :class="{ done: credits.dailyClaimed }" @click="claim">
-      {{ credits.dailyClaimed ? '今日已领' : `领取今日积分 · +${credits.dailyGrant}` }}
     </view>
 
     <view class="menu">
@@ -147,11 +124,6 @@ async function claim() {
 .side { text-align: right; }
 .state { display: block; font-size: 22rpx; background: rgba(255,255,255,0.14); border-radius: 999rpx; padding: 6rpx 14rpx; }
 .recharge { display: inline-block; margin-top: 16rpx; background: #fff; color: $brand-dark; border-radius: 999rpx; padding: 10rpx 20rpx; font-size: 24rpx; font-weight: 700; }
-.claim {
-  margin-top: 16rpx; text-align: center; background: $brand; color: #fff;
-  border-radius: 999rpx; padding: 22rpx; font-weight: 750;
-}
-.claim.done { background: $brand-soft; color: $brand-dark; }
 .menu { margin-top: 20rpx; background: $card; border-radius: 24rpx; border: 1rpx solid $line; overflow: hidden; }
 .item { display: flex; justify-content: space-between; padding: 28rpx; border-bottom: 1rpx solid $line; }
 .item:last-child { border-bottom: none; }

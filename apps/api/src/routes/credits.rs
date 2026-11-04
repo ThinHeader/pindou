@@ -1,4 +1,4 @@
-//! 积分：查询 / 日领 / 广告 / 充值（开发示意、虚拟支付或微信支付 JSAPI）
+//! 积分：查询 / 激励广告 / 充值（开发示意、虚拟支付或微信支付 JSAPI）
 
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -48,7 +48,6 @@ struct VirtualPushQuery {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/credits/me", get(me))
-        .route("/credits/daily-claim", post(daily_claim))
         .route("/credits/ad-reward", post(ad_reward))
         .route("/credits/ledger", get(ledger))
         .route("/credits/packs", get(packs))
@@ -64,13 +63,6 @@ pub fn router() -> Router<AppState> {
 
 async fn me(State(state): State<AppState>, auth: AuthUser) -> AppResult<Json<CreditsView>> {
     Ok(Json(credits::view(&state, auth.user_id).await?))
-}
-
-async fn daily_claim(
-    State(state): State<AppState>,
-    auth: AuthUser,
-) -> AppResult<Json<CreditMutation>> {
-    Ok(Json(credits::daily_claim(&state, auth.user_id).await?))
 }
 
 async fn ad_reward(
@@ -272,6 +264,15 @@ async fn virtual_notify(
         ParsedPush::Ignored { event } => {
             tracing::info!(%event, "ignore virtual pay event");
             virtual_result(xml, 0, "success")
+        }
+        ParsedPush::Refund(push) => {
+            match credits::accept_virtual_refund(&state, &push, signature_verified).await {
+                Ok(()) => virtual_result(xml, 0, "success"),
+                Err(err) => {
+                    tracing::warn!(error = %err, out_trade_no = %push.out_trade_no, "virtual refund failed");
+                    virtual_result(xml, 1, "处理失败")
+                }
+            }
         }
         ParsedPush::Deliver(push) => {
             match credits::accept_virtual_deliver(&state, &push, signature_verified).await {

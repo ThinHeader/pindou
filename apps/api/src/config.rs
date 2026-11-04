@@ -59,6 +59,8 @@ pub struct Config {
     pub wx_virtual_msg_token: String,
     /// 默认 `https://api.weixin.qq.com`。测试可改到本机假微信。
     pub wx_virtual_api_base: String,
+    /// 客诉退款口令。留空时退款接口关闭。不要写入仓库，也不要发给小程序。
+    pub ops_refund_token: String,
 }
 
 impl std::fmt::Debug for Config {
@@ -118,6 +120,7 @@ impl std::fmt::Debug for Config {
                 &redact_set(&self.wx_virtual_msg_token),
             )
             .field("wx_virtual_api_base", &self.wx_virtual_api_base)
+            .field("ops_refund_token", &redact_set(&self.ops_refund_token))
             .finish()
     }
 }
@@ -183,6 +186,7 @@ impl Config {
                     raw
                 }
             },
+            ops_refund_token: env_trimmed("OPS_REFUND_TOKEN"),
         }
         .load_pay_material()
     }

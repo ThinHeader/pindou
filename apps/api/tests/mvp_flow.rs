@@ -1,4 +1,4 @@
-//! 核心链路：登录、日领幂等、出稿扣分。作品发布与广场互动应返回 410。需要本机 PostgreSQL。
+//! 核心链路：登录、激励广告每日一次、出稿扣分。作品发布与广场互动应返回 410。需要本机 PostgreSQL。
 
 use std::io::Cursor;
 
@@ -146,6 +146,29 @@ async fn call(
     (status, value)
 }
 
+async fn grant_pack(app: &axum::Router, token: &str) -> i64 {
+    let (status, order) = call(
+        app,
+        "POST",
+        "/api/v1/credits/orders",
+        Some(token),
+        Some(json!({ "pack_code": "small" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    let order_id = order["order_id"].as_str().unwrap();
+    let (status, paid) = call(
+        app,
+        "POST",
+        &format!("/api/v1/credits/orders/{order_id}/mock-callback"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{paid}");
+    paid["balance"].as_i64().unwrap()
+}
+
 #[tokio::test]
 async fn mvp_auth_credits_generate_plaza() {
     let app = app().await;
@@ -191,9 +214,11 @@ async fn mvp_auth_credits_generate_plaza() {
     let (status, me) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{me}");
     assert_eq!(me["balance"], 0);
-    assert_eq!(me["daily_claimed_today"], false);
+    assert_eq!(me["ad_claimed_today"], false);
+    assert!(me.get("daily_claimed_today").is_none());
+    assert!(me.get("daily_grant").is_none());
 
-    let (status, claimed) = call(
+    let (status, gone) = call(
         &app,
         "POST",
         "/api/v1/credits/daily-claim",
@@ -201,24 +226,21 @@ async fn mvp_auth_credits_generate_plaza() {
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{gone}");
+
+    let (status, claimed) =
+        call(&app, "POST", "/api/v1/credits/ad-reward", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
-    assert_eq!(claimed["balance"], 3);
-    assert_eq!(claimed["delta"], 3);
-    assert_eq!(claimed["reason"], "daily_claim");
+    assert_eq!(claimed["balance"], 1);
+    assert_eq!(claimed["delta"], 1);
+    assert_eq!(claimed["reason"], "ad_reward");
 
     let (status, me_after) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{me_after}");
-    assert_eq!(me_after["daily_claimed_today"], true);
-    assert_eq!(me_after["balance"], 3);
+    assert_eq!(me_after["ad_claimed_today"], true);
+    assert_eq!(me_after["balance"], 1);
 
-    let (status, dup) = call(
-        &app,
-        "POST",
-        "/api/v1/credits/daily-claim",
-        Some(token),
-        None,
-    )
-    .await;
+    let (status, dup) = call(&app, "POST", "/api/v1/credits/ad-reward", Some(token), None).await;
     assert_eq!(status, StatusCode::CONFLICT, "{dup}");
     assert_eq!(dup["error"], "already_claimed");
 
@@ -259,7 +281,7 @@ async fn mvp_auth_credits_generate_plaza() {
     );
 
     let (_status, still) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
-    assert_eq!(still["balance"], 3, "失败出稿不应扣分 {still}");
+    assert_eq!(still["balance"], 1, "失败出稿不应扣分 {still}");
 
     let generated = generate_done(
         &app,
@@ -273,7 +295,7 @@ async fn mvp_auth_credits_generate_plaza() {
         }),
     )
     .await;
-    assert_eq!(generated["balance"], 2);
+    assert_eq!(generated["balance"], 0);
     assert_eq!(generated["provider"], "mock");
     assert_eq!(generated["draft"]["pipeline"], "mvp_plus");
     assert!(generated["original_url"]
@@ -370,9 +392,8 @@ async fn mvp_auth_credits_generate_plaza() {
     assert_eq!(comment["error"], "gone");
 
     let (status, ad) = call(&app, "POST", "/api/v1/credits/ad-reward", Some(token), None).await;
-    assert_eq!(status, StatusCode::OK, "{ad}");
-    assert_eq!(ad["balance"], 3);
-    assert_eq!(ad["delta"], 1);
+    assert_eq!(status, StatusCode::CONFLICT, "{ad}");
+    assert_eq!(ad["error"], "already_claimed");
 
     let (status, order) = call(
         &app,
@@ -399,7 +420,7 @@ async fn mvp_auth_credits_generate_plaza() {
     assert_eq!(pending["status"], "created");
     let (status, before_pay) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{before_pay}");
-    assert_eq!(before_pay["balance"], 3, "未支付不能加积分");
+    assert_eq!(before_pay["balance"], 0, "未支付不能加积分");
     let (status, paid) = call(
         &app,
         "POST",
@@ -410,7 +431,7 @@ async fn mvp_auth_credits_generate_plaza() {
     .await;
     assert_eq!(status, StatusCode::OK, "{paid}");
     assert_eq!(paid["delta"], 10);
-    assert_eq!(paid["balance"], 13);
+    assert_eq!(paid["balance"], 10);
     let (status, paid_again) = call(
         &app,
         "POST",
@@ -421,7 +442,7 @@ async fn mvp_auth_credits_generate_plaza() {
     .await;
     assert_eq!(status, StatusCode::OK, "{paid_again}");
     assert_eq!(paid_again["delta"], 0);
-    assert_eq!(paid_again["balance"], 13);
+    assert_eq!(paid_again["balance"], 10);
 
     let (status, broke) = call(
         &app,
@@ -476,16 +497,8 @@ async fn draft_title_rename_and_delete() {
     assert_eq!(status, StatusCode::OK, "{login}");
     let token = login["token"].as_str().unwrap();
 
-    let (status, claimed) = call(
-        &app,
-        "POST",
-        "/api/v1/credits/daily-claim",
-        Some(token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{claimed}");
-    assert_eq!(claimed["balance"], 3);
+    let topped = grant_pack(&app, token).await;
+    assert_eq!(topped, 10);
 
     let long = "豆".repeat(41);
     let (status, too_long) = call(
@@ -505,7 +518,7 @@ async fn draft_title_rename_and_delete() {
     assert!(too_long["message"].as_str().unwrap_or("").contains("40"));
     let (status, balance) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{balance}");
-    assert_eq!(balance["balance"], 3, "非法标题不应扣分");
+    assert_eq!(balance["balance"], 10, "非法标题不应扣分");
 
     let unnamed = generate_done(
         &app,
@@ -519,7 +532,7 @@ async fn draft_title_rename_and_delete() {
     )
     .await;
     assert_eq!(unnamed["draft"]["title"], "未命名草稿");
-    assert_eq!(unnamed["balance"], 2);
+    assert_eq!(unnamed["balance"], 9);
     let draft_id = unnamed["draft"]["id"].as_str().unwrap();
 
     let (status, renamed) = call(
@@ -680,7 +693,7 @@ async fn draft_title_rename_and_delete() {
     )
     .await;
     assert_eq!(second["draft"]["title"], "第二张");
-    assert_eq!(second["balance"], 1);
+    assert_eq!(second["balance"], 8);
     let second_id = second["draft"]["id"].as_str().unwrap();
 
     let (status, dropped) = call(
@@ -701,7 +714,7 @@ async fn draft_title_rename_and_delete() {
     )
     .await;
     assert_eq!(builtin["draft"]["title"], "小橘猫吐舌");
-    assert_eq!(builtin["balance"], 0);
+    assert_eq!(builtin["balance"], 7);
     let builtin_id = builtin["draft"]["id"].as_str().unwrap();
     let (status, only_draft) = call(
         &app,
@@ -738,15 +751,8 @@ async fn mvp_plus_mock_pipeline_tags_and_board_sizes() {
     .await;
     assert_eq!(status, StatusCode::OK, "{login}");
     let token = login["token"].as_str().unwrap();
-    let (status, claimed) = call(
-        &app,
-        "POST",
-        "/api/v1/credits/daily-claim",
-        Some(token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{claimed}");
+    let topped = grant_pack(&app, token).await;
+    assert_eq!(topped, 10);
 
     let job = generate_done(
         &app,
@@ -765,7 +771,7 @@ async fn mvp_plus_mock_pipeline_tags_and_board_sizes() {
     )
     .await;
     assert_eq!(job["provider"], "mock");
-    assert_eq!(job["balance"], 2);
+    assert_eq!(job["balance"], 9);
     assert_eq!(job["charged"], true);
     let tags = job["draft"]["pipeline_tags"].as_array().unwrap();
     let tag_text: Vec<&str> = tags.iter().filter_map(|item| item.as_str()).collect();
@@ -815,7 +821,7 @@ async fn mvp_plus_mock_pipeline_tags_and_board_sizes() {
     .await;
     assert_eq!(wide["draft"]["board_size"], 78);
     assert_eq!(wide["draft"]["peg_count"], 78 * 78);
-    assert_eq!(wide["balance"], 1);
+    assert_eq!(wide["balance"], 8);
     assert!(wide["draft"]["pipeline_lines"]
         .as_array()
         .unwrap()
@@ -839,7 +845,7 @@ async fn mvp_plus_mock_pipeline_tags_and_board_sizes() {
     assert!(plain["cartoon_url"].as_str().is_some());
     assert_eq!(plain["draft"]["board_size"], 104);
     assert_eq!(plain["draft"]["peg_count"], 104 * 104);
-    assert_eq!(plain["balance"], 0);
+    assert_eq!(plain["balance"], 7);
     let states: Vec<&str> = plain["stages"]
         .as_array()
         .unwrap()
@@ -914,14 +920,8 @@ async fn provider_switch_charges_only_when_mock_succeeds() {
         .await;
         assert_eq!(status, StatusCode::OK, "{login}");
         let token = login["token"].as_str().unwrap();
-        let (status, claimed) = call(
-            &app,
-            "POST",
-            "/api/v1/credits/daily-claim",
-            Some(token),
-            None,
-        )
-        .await;
+        let (status, claimed) =
+            call(&app, "POST", "/api/v1/credits/ad-reward", Some(token), None).await;
         assert_eq!(status, StatusCode::OK, "{claimed}");
         let (status, denied) = call(
             &app,
@@ -943,7 +943,7 @@ async fn provider_switch_charges_only_when_mock_succeeds() {
         }
         let (status, still) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
         assert_eq!(status, StatusCode::OK, "{still}");
-        assert_eq!(still["balance"], 3, "{provider} 失败不应扣分 {still}");
+        assert_eq!(still["balance"], 1, "{provider} 失败不应扣分 {still}");
     }
 
     let app = app_configured(|config| {
@@ -961,14 +961,8 @@ async fn provider_switch_charges_only_when_mock_succeeds() {
     .await;
     assert_eq!(status, StatusCode::OK, "{login}");
     let token = login["token"].as_str().unwrap();
-    let (status, claimed) = call(
-        &app,
-        "POST",
-        "/api/v1/credits/daily-claim",
-        Some(token),
-        None,
-    )
-    .await;
+    let (status, claimed) =
+        call(&app, "POST", "/api/v1/credits/ad-reward", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
     let generated = generate_done(
         &app,
@@ -982,7 +976,7 @@ async fn provider_switch_charges_only_when_mock_succeeds() {
     .await;
     assert_eq!(generated["provider"], "mock");
     assert_eq!(generated["charged"], true);
-    assert_eq!(generated["balance"], 2);
+    assert_eq!(generated["balance"], 0);
     assert_eq!(generated["draft"]["board_size"], 104);
     assert_eq!(generated["draft"]["peg_count"], 104 * 104);
 }
@@ -1176,4 +1170,128 @@ async fn profile_put_json_saves_chinese_nickname_and_avatar_base64() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
     assert_eq!(bad["error"], "bad_request");
+}
+
+#[tokio::test]
+async fn ops_refund_rejects_user_token_and_mock_orders() {
+    let app = app_configured(|config| {
+        config.ops_refund_token.clear();
+    })
+    .await;
+    let code = format!("mock:refund-closed-{}", Uuid::new_v4());
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    let token = login["token"].as_str().unwrap();
+    let topped = grant_pack(&app, token).await;
+    assert_eq!(topped, 10);
+    let (status, orders) = call(
+        &app,
+        "POST",
+        "/api/v1/credits/orders",
+        Some(token),
+        Some(json!({ "pack_code": "small" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{orders}");
+    let order_id = orders["order_id"].as_str().unwrap();
+    let (status, user_refund) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/credits/orders/{order_id}/refund"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{user_refund}");
+    let (status, closed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/ops/credit-orders/{order_id}/refund"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{closed}");
+    assert!(closed["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("OPS_REFUND_TOKEN"));
+
+    let app = app_configured(|config| {
+        config.ops_refund_token = "ops-test-token".into();
+    })
+    .await;
+    let code = format!("mock:refund-mock-{}", Uuid::new_v4());
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    let token = login["token"].as_str().unwrap();
+    let balance = grant_pack(&app, token).await;
+    assert_eq!(balance, 10);
+    let (status, order) = call(
+        &app,
+        "POST",
+        "/api/v1/credits/orders",
+        Some(token),
+        Some(json!({ "pack_code": "small" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    let paid_id = order["order_id"].as_str().unwrap().to_string();
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/credits/orders/{paid_id}/mock-callback"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, denied) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/ops/credit-orders/{paid_id}/refund"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+    let (status, wrong) = call_ops(&app, &paid_id, "nope").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{wrong}");
+    let (status, mock_refund) = call_ops(&app, &paid_id, "ops-test-token").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{mock_refund}");
+    assert!(mock_refund["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("虚拟支付"));
+    let (status, me) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["balance"], 20);
+}
+
+async fn call_ops(app: &axum::Router, order_id: &str, token: &str) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/ops/credit-orders/{order_id}/refund"))
+        .header("x-ops-token", token)
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
 }
