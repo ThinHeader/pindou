@@ -1,3 +1,4 @@
+import { notifySessionExpired, refreshSessionSingleFlight, sessionRefreshBound } from './session'
 import type {
   ApiError,
   CreditOrder,
@@ -31,76 +32,152 @@ function authHeader(): Record<string, string> {
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE'
 
-function request<T>(path: string, method: Method = 'GET', data?: object): Promise<T> {
-  return new Promise((resolve, reject) => {
+type RequestOpts = {
+  retryOn401?: boolean
+}
+
+type Ok<T> = { ok: true; data: T }
+type Err = { ok: false; hadAuth: boolean; error: ApiError }
+
+function send<T>(path: string, method: Method, data?: object): Promise<Ok<T> | Err> {
+  return new Promise((resolve) => {
+    const auth = authHeader()
+    const hadAuth = Boolean(auth.Authorization)
+    const header = {
+      'Content-Type': 'application/json',
+      ...auth,
+    }
     uni.request({
       url: `${API_BASE}${path}`,
       method,
       data: data as UniApp.RequestOptions['data'],
-      header: {
-        'Content-Type': 'application/json',
-        ...authHeader(),
-      },
+      header,
       success: (res) => {
-        const data = res.data as ApiError & T
+        const body = res.data as ApiError & T
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(data as T)
+          resolve({ ok: true, data: body as T })
           return
         }
-        reject({
-          statusCode: res.statusCode,
-          error: data?.error,
-          message: data?.message || '请求失败',
-        } satisfies ApiError)
+        resolve({
+          ok: false,
+          hadAuth,
+          error: {
+            statusCode: res.statusCode,
+            error: body?.error,
+            message: body?.message || '请求失败',
+          },
+        })
       },
       fail: () => {
-        reject({
-          message: '无法连接服务器，请确认 API 已启动',
-        } satisfies ApiError)
+        resolve({
+          ok: false,
+          hadAuth,
+          error: { message: '无法连接服务器，请确认 API 已启动' },
+        })
       },
     })
+  })
+}
+
+function silent(err: ApiError): ApiError {
+  return { ...err, silent: true }
+}
+
+async function withAuthRetry<T>(err: ApiError, retry: () => Promise<T>): Promise<T> {
+  if (!sessionRefreshBound()) throw err
+  const ok = await refreshSessionSingleFlight()
+  if (!ok) {
+    notifySessionExpired()
+    throw silent(err)
+  }
+  try {
+    return await retry()
+  } catch (again) {
+    const parsed = errorOf(again)
+    if (parsed.statusCode === 401) {
+      notifySessionExpired()
+      throw silent(parsed)
+    }
+    throw again
+  }
+}
+
+function request<T>(path: string, method: Method = 'GET', data?: object, opts?: RequestOpts): Promise<T> {
+  const allowRetry = opts?.retryOn401 !== false
+  return send<T>(path, method, data).then(async (result) => {
+    if (result.ok) return result.data
+    if (allowRetry && result.hadAuth && result.error.statusCode === 401) {
+      return withAuthRetry(result.error, async () => {
+        const second = await send<T>(path, method, data)
+        if (!second.ok) throw second.error
+        return second.data
+      })
+    }
+    throw result.error
   })
 }
 
 export const http = {
   get: <T>(path: string) => request<T>(path, 'GET'),
-  post: <T>(path: string, data?: object) => request<T>(path, 'POST', data),
+  post: <T>(path: string, data?: object, opts?: RequestOpts) => request<T>(path, 'POST', data, opts),
   put: <T>(path: string, data?: object) => request<T>(path, 'PUT', data),
   del: <T>(path: string) => request<T>(path, 'DELETE'),
 }
 
-export function uploadImage(filePath: string): Promise<StoredObject> {
-  return new Promise((resolve, reject) => {
+function uploadOnce(filePath: string): Promise<Ok<StoredObject> | Err> {
+  return new Promise((resolve) => {
+    const header = authHeader()
+    const hadAuth = Boolean(header.Authorization)
     uni.uploadFile({
       url: `${API_BASE}/api/v1/uploads`,
       filePath,
       name: 'file',
-      header: authHeader(),
+      header,
       success: (res) => {
         let data: StoredObject & ApiError
         try {
           data = typeof res.data === 'string' ? JSON.parse(res.data) : (res.data as StoredObject & ApiError)
         } catch {
-          reject({ message: '上传响应无法解析' } satisfies ApiError)
+          resolve({ ok: false, hadAuth, error: { message: '上传响应无法解析' } })
           return
         }
         if (res.statusCode >= 200 && res.statusCode < 300 && data.key) {
-          resolve(data)
+          resolve({ ok: true, data })
           return
         }
-        reject({
-          statusCode: res.statusCode,
-          error: data.error,
-          message: data.message || '上传失败',
-        } satisfies ApiError)
+        resolve({
+          ok: false,
+          hadAuth,
+          error: {
+            statusCode: res.statusCode,
+            error: data.error,
+            message: data.message || '上传失败',
+          },
+        })
       },
-      fail: () => reject({ message: '上传失败，请重试' } satisfies ApiError),
+      fail: () => resolve({ ok: false, hadAuth, error: { message: '上传失败，请重试' } }),
     })
   })
 }
 
+export function uploadImage(filePath: string): Promise<StoredObject> {
+  return uploadOnce(filePath).then(async (result) => {
+    if (result.ok) return result.data
+    if (result.hadAuth && result.error.statusCode === 401) {
+      return withAuthRetry(result.error, async () => {
+        const second = await uploadOnce(filePath)
+        if (!second.ok) throw second.error
+        return second.data
+      })
+    }
+    throw result.error
+  })
+}
+
 export const authApi = {
-  wxLogin: (code: string) => http.post<LoginResult>('/api/v1/auth/wx-login', { code }),
+  // 续期本身就是这次登录。401 不能再触发续期，否则会套娃。
+  wxLogin: (code: string) =>
+    http.post<LoginResult>('/api/v1/auth/wx-login', { code }, { retryOn401: false }),
   me: () => http.get<MeProfile>('/api/v1/me'),
   putNickname: (nickname: string) => http.put<MeProfile>('/api/v1/me', { nickname }),
   putProfile: (body: { nickname?: string; avatar_base64?: string }) =>

@@ -2,6 +2,8 @@ export interface ApiError {
   statusCode?: number
   error?: string
   message?: string
+  /** 登录过期已引导去登录页，调用方不必再弹错误。 */
+  silent?: boolean
 }
 
 export interface UserInfo {
