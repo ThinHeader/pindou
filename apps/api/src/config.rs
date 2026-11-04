@@ -399,12 +399,14 @@ pub fn resolve_provider(provider: &str, ark_api_key: &str) -> Result<PipelineMod
             if key_ready {
                 Ok(PipelineMode::Seedream)
             } else {
-                Err("已指定火山方舟出稿，但未配置 ARK_API_KEY。不要使用阿里云视觉智能的 AccessKey。")
+                tracing::warn!("出稿服务未就绪：已指定出稿但未配置密钥");
+                Err("出稿服务未就绪。本次未扣积分。")
             }
         }
-        "aliyun" => Err(
-            "阿里云视觉智能（SegmentBody / GenerateHumanAnimeStyle）已不在出稿路径。请改用 PIPELINE_PROVIDER=seedream 或 ark，并配置火山方舟 ARK_API_KEY。",
-        ),
+        "aliyun" => {
+            tracing::warn!("已拒绝停用的出稿方式");
+            Err("当前出稿方式已停用。本次未扣积分。")
+        }
         _ => {
             if key_ready {
                 Ok(PipelineMode::Seedream)
@@ -439,11 +441,12 @@ mod tests {
             PipelineMode::Seedream
         );
         assert!(resolve_provider("seedream", "  ").is_err());
-        assert!(resolve_provider("ark", "")
-            .unwrap_err()
-            .contains("ARK_API_KEY"));
+        let missing = resolve_provider("ark", "").unwrap_err();
+        assert!(missing.contains("未就绪"));
+        assert!(!missing.contains("ARK_API_KEY"));
         let aliyun = resolve_provider("aliyun", "LTAI-not-ark").unwrap_err();
-        assert!(aliyun.contains("视觉智能"));
-        assert!(aliyun.contains("ARK_API_KEY"));
+        assert!(aliyun.contains("已停用"));
+        assert!(!aliyun.contains("视觉智能"));
+        assert!(!aliyun.contains("ARK_API_KEY"));
     }
 }

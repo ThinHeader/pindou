@@ -283,8 +283,8 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
 - `title`：可选，1–40 字，首尾空格会去掉。不传或只传空白时：示例图用「小橘猫吐舌 / 黄油小熊 / 柠檬汽水 / 蜜桃兔耳」，其他图用「未命名草稿」。超过 40 字返回 400，且不建任务、不扣积分。
 - 没图：400「请先选择图片」。坏图：400「无法解析图片，请上传 JPG 或 PNG」。过大：400「图片过大…」。余额不足 402。这些都发生在扣分之前。
 - 没配 `ARK_API_KEY` 且 `PIPELINE_PROVIDER=auto`（或显式 `mock`）时 `provider` 为 `mock`：本地做出透明平涂 PNG，再用最近邻得到真实色号稿，不请求方舟。
-- `PIPELINE_PROVIDER=seedream` 或 `ark` 但 `ARK_API_KEY` 为空：400，不建任务，不扣积分。
-- `PIPELINE_PROVIDER=aliyun`：400。视觉智能已不在出稿路径。
+- `PIPELINE_PROVIDER=seedream` 或 `ark` 但 `ARK_API_KEY` 为空：400「出稿服务未就绪。本次未扣积分。」，不建任务，不扣积分。上游报错也不会把原文回给小程序。
+- `PIPELINE_PROVIDER=aliyun`：400，文案是「当前出稿方式已停用。本次未扣积分。」这条路径已退出。
 
 立刻返回的任务（此时通常还没扣分）：
 
@@ -293,16 +293,18 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
   "job_id": "uuid",
   "status": "seedream",
   "progress": 36,
-  "message": "AI 出稿中",
+  "message": "正在整理色块",
   "provider": "mock",
   "charged": false,
   "stages": [
     { "id": "upload", "label": "上传原图", "state": "done", "detail": "原图已就绪" },
-    { "id": "seedream", "label": "AI 出稿", "state": "active", "detail": "开发模拟出稿中" },
+    { "id": "seedream", "label": "色块整理", "state": "active", "detail": "本地整理色块" },
     { "id": "pixel", "label": "拼豆像素", "state": "pending", "detail": "最近邻色号 · 52×52" }
   ]
 }
 ```
+
+`message`、`stages[].label`、`stages[].detail` 会直接出现在小程序上，只用工具说法（色块整理、正在整理色块、本地整理色块）。内部 `id` 仍是 `seedream`，不要把它或供应商、模型名写进这些字段。
 
 `stages[].state`：`done` | `active` | `pending` | `fail`。
 
@@ -322,7 +324,7 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
 
 珠图算法：把 Seedream 中间图最近邻缩放到用户选择的珠板（52、78 或 104），映射到内置拼豆色板（含 A1 / B3 / C2 / D1 / K9 等），再把超出色数上限的小色块并进最近色。不用扩散模型产生官方珠图。预览是一颗颗珠子的 PNG。
 
-稿件详情额外字段：`pipeline`（`mvp_plus`；旧的官方模板是 `pixel`）、`provider`（`mock` | `seedream`；更早的稿可能是 `aliyun` 或 `local`）、`remove_bg`、`cartoon_strength`、`subject_type`、`palette_brand`、`pipeline_tags`、`pipeline_lines`、`original_url`、`matted_url`、`cartoon_url`、`source_key`。新稿的 `remove_bg` 为 false，`cartoon_strength` 为 `off`。列表卡片带 `pipeline_tags`，官方模板为空数组。
+稿件详情额外字段：`pipeline`（`mvp_plus`；旧的官方模板是 `pixel`）、`provider`（`mock` | `seedream`；更早的稿可能是 `aliyun` 或 `local`）、`remove_bg`、`cartoon_strength`、`subject_type`、`palette_brand`、`pipeline_tags`、`pipeline_lines`、`original_url`、`matted_url`、`cartoon_url`、`source_key`。新稿的 `remove_bg` 为 false，`cartoon_strength` 为 `off`。列表卡片带 `pipeline_tags`，官方模板为空数组。展示用的标签和说明不写供应商或模型名，例如「色块整理」「本地色块」「拼豆色号」「最近邻色号」。失败文案同样不回传上游原文。
 
 ## 稿件库
 

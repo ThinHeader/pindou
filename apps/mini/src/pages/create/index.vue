@@ -95,10 +95,10 @@ function goLibrary() {
       <view v-for="c in ['#FF6B5B', '#FFB088', '#FFD166', '#7BDFF2', '#C9B1FF']" :key="c" class="px" :style="{ background: c }" />
     </view>
     <view class="pipe">
-      <text class="badge">MVP+</text>
+      <text class="badge">色号工具</text>
       <view>
-        <text class="pipe-h">AI 出稿再拼豆</text>
-        <text class="pipe-s">Seedream Flash → 自研像素 / 色板</text>
+        <text class="pipe-h">上传照片转成拼豆图</text>
+        <text class="pipe-s">按珠板规格生成色号图</text>
       </view>
     </view>
     <text class="lead">选择一张照片，人像 / 宠物 / 静物都行</text>
@@ -112,10 +112,10 @@ function goLibrary() {
         <view class="btn ghost" @click="pick('album')">从相册选择</view>
       </view>
       <view class="sample" @click="useSample">没有照片？用示例图试试</view>
-      <text class="tip">一次出稿扣 1 积分 · 含 AI 出稿与拼豆像素</text>
+      <text class="tip">一次出稿扣 1 积分 · 含色块整理与拼豆色号</text>
     </view>
     <view class="mini-pipe">
-      <text>① 上传</text><text class="sep">→</text><text>② AI 出稿</text><text class="sep">→</text><text>③ 拼豆</text>
+      <text>① 上传</text><text class="sep">→</text><text>② 色块整理</text><text class="sep">→</text><text>③ 拼豆色号</text>
     </view>
 
     <view class="sec-title">
@@ -132,7 +132,7 @@ function goLibrary() {
 
     <view class="sec-title"><text>出稿小贴士</text></view>
     <view class="tips">
-      <text>· Seedream 负责平涂出稿，不必先自己抠图</text>
+      <text>· 照片会先收成平涂色块，不必先自己抠图</text>
       <text>· 主体清楚、少杂物的照片更稳</text>
       <text>· 珠板可选 52 / 78 / 104，色号按所选规格生成</text>
     </view>

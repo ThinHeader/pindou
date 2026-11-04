@@ -257,7 +257,7 @@ async function buy(pack: CreditPack) {
 
     <view class="rules">
       <text class="h">积分怎么用</text>
-      <text>· 每次成功出稿消耗 {{ credits.generateCost }} 积分（含 AI 出稿与拼豆像素），失败不扣</text>
+      <text>· 每次成功出稿消耗 {{ credits.generateCost }} 积分（含色块整理与拼豆色号），失败不扣</text>
       <text>· 看完一条激励广告得 {{ credits.adReward }} 积分，每天一次</text>
       <text>· 不足时也可以充值购买</text>
     </view>

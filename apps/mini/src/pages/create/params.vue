@@ -66,7 +66,7 @@ function generate() {
       <view class="meta">
         <text class="name">{{ create.hasImage ? '参考图已选' : '还没有参考图' }}</text>
         <text class="sub">{{ create.imageLabel || '返回上一步拍照或选相册' }}</text>
-        <text class="tag">将走：AI 出稿→拼豆像素</text>
+        <text class="tag">将走：色块整理→拼豆色号</text>
         <text class="change" @click="back">更换图片</text>
       </view>
     </view>
@@ -135,11 +135,11 @@ function generate() {
         @click="create.paletteBrand = item.id"
       >{{ item.label }}</view>
     </view>
-    <text class="name-hint">色号来自内置拼豆 SKU。品牌是色板子集。珠图按上面选定的 52 / 78 / 104 做最近邻，不跟 AI 出图尺寸走。</text>
+    <text class="name-hint">色号来自内置拼豆 SKU。品牌是色板子集。珠图按上面选定的 52 / 78 / 104 做最近邻，格数以所选珠板为准。</text>
 
     <view class="note">
       预估消耗 <text class="em">{{ credits.generateCost }}</text> 积分 · 余额
-      <text class="em">{{ credits.balance }}</text>（一次性含 AI 出稿与拼豆像素）
+      <text class="em">{{ credits.balance }}</text>（一次性含色块整理与拼豆色号）
     </view>
     <view class="actions">
       <view class="btn ghost" @click="back">上一步</view>

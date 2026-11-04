@@ -25,13 +25,13 @@ const stages = computed<JobStage[]>(() => {
   const board = `${create.boardSize}×${create.boardSize}`
   return [
     { id: 'upload', label: '上传原图', state: 'active', detail: '正在上传原图' },
-    { id: 'seedream', label: 'AI 出稿', state: 'pending', detail: 'Seedream Flash 平涂插画' },
+    { id: 'flat', label: '色块整理', state: 'pending', detail: '等待整理色块' },
     { id: 'pixel', label: '拼豆像素', state: 'pending', detail: `最近邻色号 · ${board}` },
   ]
 })
 
 const failed = computed(() => job.value?.status === 'failed' || Boolean(localError.value))
-const headline = computed(() => (failed.value ? '这一步没跑通' : '智能处理中…'))
+const headline = computed(() => (failed.value ? '这一步没跑通' : '正在生成色号图…'))
 const subline = computed(() => {
   if (localError.value) return localError.value
   if (job.value?.status === 'failed') return job.value.error || job.value.message
