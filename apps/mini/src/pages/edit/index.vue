@@ -2,6 +2,7 @@
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { draftsApi, errorOf } from '../../api/http'
+import { readableError } from '../../api/payload'
 import type { DraftCard } from '../../api/types'
 import { useUserStore } from '../../stores/user'
 import { boardLabel, ensureLogin, showError, showTip } from '../../utils/ui'
@@ -31,9 +32,14 @@ async function load() {
   try {
     const data = await draftsApi.list(tab.value, keyword.value.trim())
     items.value = Array.isArray(data.items) ? data.items : []
+    if (!Array.isArray(data.items)) failed.value = '稿件列表格式不对'
   } catch (e) {
     items.value = []
-    failed.value = errorOf(e).message || '稿件加载失败'
+    if (errorOf(e).silent) {
+      failed.value = ''
+      return
+    }
+    failed.value = readableError(e, '稿件加载失败')
     showError(e, '稿件加载失败')
   } finally {
     loading.value = false
