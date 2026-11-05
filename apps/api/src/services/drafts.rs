@@ -334,6 +334,7 @@ pub(crate) fn source_key_from_ref(refer: Option<&str>, public_base: &str) -> Opt
     }
 }
 
+/// 用户没填标题时的默认名。示例图名字只用于这次出稿，不会因此写入官方稿。
 pub(crate) fn pick_title(explicit: Option<&str>, refer: Option<&str>) -> AppResult<String> {
     if let Some(title) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         return normalize_title(title);

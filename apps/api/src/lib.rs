@@ -1,6 +1,6 @@
 //! 拼豆 API。
 //!
-//! 启动时连接 PostgreSQL、执行 SQL migration，并写入官方模板种子数据。
+//! 启动时连接 PostgreSQL 并执行 SQL migration。不再写入官方预置稿。
 
 mod config;
 mod error;
@@ -27,7 +27,7 @@ pub use services::session_seal::seal_session_key_for_tests;
 pub use services::wechat_pay::seal_aead_for_tests;
 pub use state::AppState;
 
-/// 连接依赖、迁移、种子数据。
+/// 连接依赖并执行 migration。
 pub async fn connect(config: &Config) -> anyhow::Result<AppState> {
     let pool = PgPoolOptions::new()
         .max_connections(8)
@@ -60,9 +60,7 @@ pub async fn connect(config: &Config) -> anyhow::Result<AppState> {
     };
     tracing::info!("{}", services::credits::describe_checkout(config));
 
-    services::seed::seed_if_empty(&state)
-        .await
-        .context("写入官方模板种子失败")?;
+    services::seed::seed_if_empty(&state).await?;
 
     Ok(state)
 }

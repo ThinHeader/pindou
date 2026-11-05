@@ -378,7 +378,9 @@ pub fn validate_image(bytes: &[u8]) -> Result<DynamicImage, PixelError> {
     Ok(img)
 }
 
-/// 种子图和旧路径：三角滤波缩小后再映射色板。
+/// 旧路径：三角滤波缩小后再映射色板。正式出稿走 `pixelate_beads`。
+/// 官方预置稿不再调用它；单元测试仍覆盖这条路径。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn pixelate(
     bytes: &[u8],
     board: u32,
