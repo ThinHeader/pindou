@@ -5,7 +5,7 @@ import PaletteLegend from '../../components/PaletteLegend.vue'
 import { draftsApi } from '../../api/http'
 import type { DraftDetail } from '../../api/types'
 import { useCreateStore } from '../../stores/create'
-import { askConfirm, askText, boardLabel, checkedDraftTitle, showError, showTip, timeAgo } from '../../utils/ui'
+import { askConfirm, askText, boardLabel, checkedDraftTitle, ensureLogin, showError, showTip, timeAgo } from '../../utils/ui'
 
 const create = useCreateStore()
 
@@ -30,7 +30,7 @@ onLoad(async (query) => {
 })
 
 async function toggleFav() {
-  if (!draft.value) return
+  if (!ensureLogin() || !draft.value) return
   try {
     const res = await draftsApi.favorite(draft.value.id)
     draft.value.favorited = res.favorited
@@ -41,7 +41,7 @@ async function toggleFav() {
 }
 
 async function rename() {
-  if (!draft.value || !owned.value) return
+  if (!ensureLogin() || !draft.value || !owned.value) return
   const current = draft.value.title === '未命名草稿' ? '' : draft.value.title
   const typed = await askText('修改稿件名称', current, '例如：窗边的猫')
   if (typed === null || !draft.value) return
@@ -56,7 +56,7 @@ async function rename() {
 }
 
 async function remove() {
-  if (!draft.value || !owned.value) return
+  if (!ensureLogin() || !draft.value || !owned.value) return
   const current = draft.value
   const ok = await askConfirm('删除稿件', `删除后无法恢复。确定删除「${current.title}」吗？`)
   if (!ok) return
@@ -81,11 +81,12 @@ function exportImage() {
 }
 
 function revise() {
-  if (!draft.value) return
+  if (!ensureLogin() || !draft.value) return
   uni.navigateTo({ url: `/pages/edit/board?id=${draft.value.id}` })
 }
 
 function again() {
+  if (!ensureLogin()) return
   if (!draft.value?.source_key) {
     showTip('这张稿没有原图，请重新选图')
     uni.switchTab({ url: '/pages/create/index' })

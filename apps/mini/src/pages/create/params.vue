@@ -7,7 +7,7 @@ import {
   type PalettePref,
 } from '../../stores/create'
 import { useCreditsStore } from '../../stores/credits'
-import { showError, showTip } from '../../utils/ui'
+import { ensureLogin, showError, showTip } from '../../utils/ui'
 const create = useCreateStore()
 const credits = useCreditsStore()
 const sizes: { n: BoardSize; desc: string }[] = [
@@ -42,6 +42,7 @@ function onColor(e: { detail: { value: number } }) {
 }
 
 function generate() {
+  if (!ensureLogin()) return
   if (!create.hasImage) {
     showError({ message: '请先选择图片' })
     return

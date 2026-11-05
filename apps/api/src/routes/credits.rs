@@ -1,4 +1,6 @@
-//! 积分：查询 / 激励广告 / 充值（开发示意、虚拟支付或微信支付 JSAPI）
+//! 积分：查询 / 激励广告 / 充值。
+//! 用户下单只走虚拟支付；虚拟支付未配置且没有商户参数时，开发示意回调仍可用。
+//! 商户 JSAPI 不再创建订单。`/pay/wechat/notify` 只结算历史上已经生成的 JSAPI 单。
 
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, StatusCode};

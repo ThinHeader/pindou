@@ -1,6 +1,7 @@
-//! 微信支付 API v3：JSAPI 预下单、小程序调起签名、回调验签与 AEAD 解密。
+//! 微信支付 API v3：历史 JSAPI 订单的回调验签、查单与 AEAD 解密。
 //!
-//! 商户参数未配置时不走这里。配置齐全后，积分只在验签成功的支付结果里入账。
+//! 新的积分充值不再预下单，也不再给小程序下发调起参数。
+//! 商户参数未配置时不走这里。历史订单只在验签成功的支付结果里入账。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,7 +37,6 @@ pub struct PayCredentials {
     pub serial_no: String,
     pub private_key_pem: String,
     pub api_v3_key: String,
-    pub notify_url: String,
     pub public_key_pem: String,
     pub public_key_id: String,
     pub api_base: String,
@@ -187,84 +187,9 @@ pub fn pay_mode(config: &Config) -> PayMode {
         serial_no: config.wechat_mch_serial_no.trim().to_string(),
         private_key_pem: config.wechat_mch_private_key.clone(),
         api_v3_key: config.wechat_pay_api_v3_key.clone(),
-        notify_url: notify,
         public_key_pem: config.wechat_pay_public_key.clone(),
         public_key_id: config.wechat_pay_public_key_id.trim().to_string(),
         api_base,
-    })
-}
-
-pub fn describe_pay_mode(config: &Config) -> String {
-    match pay_mode(config) {
-        PayMode::Mock => "微信支付未配置，充值走开发示意（mock-callback）".into(),
-        PayMode::Misconfigured(reason) => format!("微信支付配置不完整，示意到账已关闭：{reason}"),
-        PayMode::Live(_) => "微信支付 JSAPI 已启用".into(),
-    }
-}
-
-pub async fn jsapi_prepay(
-    state: &AppState,
-    creds: &PayCredentials,
-    description: &str,
-    out_trade_no: &str,
-    amount_fen: i32,
-    openid: &str,
-) -> AppResult<String> {
-    if !valid_out_trade_no(out_trade_no) {
-        return Err(AppError::BadRequest("商户订单号无效".into()));
-    }
-    if openid.trim().is_empty() {
-        return Err(AppError::BadRequest("缺少付款人 openid".into()));
-    }
-    let payload = serde_json::json!({
-        "appid": creds.app_id,
-        "mchid": creds.mch_id,
-        "description": truncate_bytes(description, 127),
-        "out_trade_no": out_trade_no,
-        "notify_url": creds.notify_url,
-        "amount": { "total": amount_fen, "currency": "CNY" },
-        "payer": { "openid": openid },
-    });
-    let body = serde_json::to_string(&payload).map_err(|err| AppError::Internal(err.into()))?;
-    let resp = signed_request(creds, "POST", "/v3/pay/transactions/jsapi", &body).await?;
-    if should_verify_response(&creds.api_base) {
-        verify_http_signature(state, creds, &resp).await?;
-    }
-    if !resp.status.is_success() {
-        return Err(AppError::BadRequest(format!(
-            "微信支付下单失败：{}",
-            wechat_error_message(&resp.body)
-        )));
-    }
-    let parsed: PrepayResponse = serde_json::from_slice(&resp.body)
-        .map_err(|_| AppError::BadRequest("微信支付下单响应无法解析".into()))?;
-    if parsed.prepay_id.is_empty() || parsed.prepay_id.chars().any(|c| c.is_whitespace()) {
-        return Err(AppError::BadRequest("微信返回的 prepay_id 无效".into()));
-    }
-    Ok(parsed.prepay_id)
-}
-
-pub fn mini_program_pay_params(
-    creds: &PayCredentials,
-    prepay_id: &str,
-) -> AppResult<JsapiPayParams> {
-    if prepay_id.is_empty() || prepay_id.chars().any(|c| c.is_whitespace()) {
-        return Err(AppError::BadRequest("prepay_id 无效".into()));
-    }
-    let time_stamp = Utc::now().timestamp().to_string();
-    let nonce_str = Uuid::new_v4().simple().to_string();
-    let package = format!("prepay_id={prepay_id}");
-    let message = format!("{}\n{time_stamp}\n{nonce_str}\n{package}\n", creds.app_id);
-    let key = parse_private_key(&creds.private_key_pem)
-        .map_err(|err| AppError::ServiceUnavailable(format!("商户私钥无法解析：{err}")))?;
-    let pay_sign =
-        sign_pkcs1(&key, message.as_bytes()).map_err(|err| AppError::ServiceUnavailable(err))?;
-    Ok(JsapiPayParams {
-        time_stamp,
-        nonce_str,
-        package,
-        sign_type: "RSA".into(),
-        pay_sign,
     })
 }
 
@@ -651,17 +576,6 @@ fn timestamp_fresh_at(ts: &str, now: i64) -> bool {
     (now - ts).abs() <= TIMESTAMP_WINDOW_SECS
 }
 
-fn truncate_bytes(value: &str, max: usize) -> String {
-    if value.len() <= max {
-        return value.to_string();
-    }
-    let mut end = max;
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_string()
-}
-
 fn wechat_error_message(body: &[u8]) -> String {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return "微信支付返回错误".into();
@@ -778,11 +692,6 @@ pub fn seal_aead_for_tests(
         )
         .map_err(|_| "加密失败".to_string())?;
     Ok(STANDARD.encode(ciphertext))
-}
-
-#[derive(Deserialize)]
-struct PrepayResponse {
-    prepay_id: String,
 }
 
 #[derive(Deserialize)]

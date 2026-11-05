@@ -43,14 +43,6 @@ export interface CreditPack {
   popular: boolean
 }
 
-export interface WxPayParams {
-  timeStamp: string
-  nonceStr: string
-  package: string
-  signType: string
-  paySign: string
-}
-
 export interface VirtualPayParams {
   signData: string
   paySig: string
@@ -68,7 +60,6 @@ export interface CreditOrder {
   price_label: string
   status: string
   mock: boolean
-  pay_params?: WxPayParams | null
   virtual_payment?: VirtualPayParams | null
   balance?: number
 }

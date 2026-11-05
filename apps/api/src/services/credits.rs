@@ -1,7 +1,8 @@
 //! 积分：激励广告（PostgreSQL 按自然日幂等）/ 出稿扣减 / 充值 / 客诉退款。
 //!
-//! 充值入账只有三条路径：未配置支付时的开发示意回调、验签通过的微信支付结果、
-//! 以及虚拟支付的发货推送或查单。三条路径都锁订单，只在 `created → paid` 时加一次积分。
+//! 新的用户充值只走两条路径：未配置虚拟支付时的开发示意回调，以及虚拟支付的发货推送或查单。
+//! 商户 JSAPI 不再创建订单。历史上已生成的 JSAPI 单仍可由验签通知入账。
+//! 这几条路径都锁订单，只在 `created → paid` 时加一次积分。
 //! 每日免费领取已停用。`daily_claims` 只记录激励广告，每个东八区自然日一次。
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
@@ -114,7 +115,6 @@ enum Checkout {
     Mock,
     Misconfigured(String),
     Virtual(virtual_pay::VirtualCreds),
-    Wechat(wechat_pay::PayCredentials),
 }
 
 fn checkout_mode(config: &Config) -> Checkout {
@@ -124,21 +124,23 @@ fn checkout_mode(config: &Config) -> Checkout {
         VirtualMode::Unset => match wechat_pay::pay_mode(config) {
             PayMode::Mock => Checkout::Mock,
             PayMode::Misconfigured(reason) => Checkout::Misconfigured(reason),
-            PayMode::Live(creds) => Checkout::Wechat(creds),
+            // 商户号配齐也不再给 C 端下 JSAPI 单。积分是虚拟商品，只能走小程序虚拟支付。
+            PayMode::Live(_) => {
+                Checkout::Misconfigured("积分充值仅支持小程序虚拟支付，已关闭商户 JSAPI".into())
+            }
         },
     }
 }
 
 pub fn describe_checkout(config: &Config) -> String {
     match checkout_mode(config) {
-        Checkout::Mock => "充值未配置虚拟支付或商户参数，走开发示意（mock-callback）".into(),
+        Checkout::Mock => "充值未配置虚拟支付，走开发示意（mock-callback，小程序不调用）".into(),
         Checkout::Misconfigured(reason) => format!("充值配置不完整，示意到账已关闭：{reason}"),
         Checkout::Virtual(creds) => format!(
             "虚拟支付已启用（env={}，发货通知 {}）",
             creds.env,
             virtual_pay::notify_url(config)
         ),
-        Checkout::Wechat(_) => wechat_pay::describe_pay_mode(config),
     }
 }
 
@@ -153,17 +155,12 @@ pub fn pack_list_meta(state: &AppState) -> PackListMeta {
         Checkout::Mock => PackListMeta {
             mock: true,
             pay_mode: "mock",
-            note: "未配置虚拟支付或微信支付。mock-callback 直接到账，不会产生真实扣款",
+            note: "未配置虚拟支付。mock-callback 只给本地接口测试，小程序不会调用",
         },
         Checkout::Virtual(_) => PackListMeta {
             mock: false,
             pay_mode: "virtual",
             note: "微信虚拟支付。发货通知或查单确认后到账，未支付不加积分",
-        },
-        Checkout::Wechat(_) => PackListMeta {
-            mock: false,
-            pay_mode: "wechat",
-            note: "微信支付。验签成功后到账，未支付不加积分",
         },
         Checkout::Misconfigured(_) => PackListMeta {
             mock: false,
@@ -281,42 +278,8 @@ pub async fn create_order(
             let row = insert_created(state, user_id, pack, "mock").await?;
             Ok(order_view(&row, true, None, None, None))
         }
-        Checkout::Wechat(creds) => create_wechat_order(state, user_id, pack, creds).await,
         Checkout::Virtual(creds) => create_virtual_order(state, user_id, pack, creds).await,
     }
-}
-
-async fn create_wechat_order(
-    state: &AppState,
-    user_id: Uuid,
-    pack: &Pack,
-    creds: wechat_pay::PayCredentials,
-) -> AppResult<OrderView> {
-    let row = insert_created(state, user_id, pack, "wechat").await?;
-    let openid = row
-        .payer_openid
-        .clone()
-        .ok_or_else(|| AppError::BadRequest("缺少付款人 openid".into()))?;
-    let description = format!("拼豆积分-{}", pack.name);
-    let prepay_id = wechat_pay::jsapi_prepay(
-        state,
-        &creds,
-        &description,
-        &row.out_trade_no,
-        pack.price_cents,
-        &openid,
-    )
-    .await?;
-    if let Err(err) = sqlx::query("UPDATE credit_orders SET prepay_id = $2 WHERE id = $1")
-        .bind(row.id)
-        .bind(&prepay_id)
-        .execute(&state.db)
-        .await
-    {
-        tracing::error!(error = %err, out_trade_no = %row.out_trade_no, "save prepay_id failed");
-    }
-    let params = wechat_pay::mini_program_pay_params(&creds, &prepay_id)?;
-    Ok(order_view(&row, false, Some(params), None, None))
 }
 
 async fn create_virtual_order(
@@ -1494,7 +1457,21 @@ mod tests {
         config.wechat_mch_id = "1900000109".into();
         match checkout_mode(&config) {
             Checkout::Virtual(creds) => assert_eq!(creds.env, 1),
-            _ => panic!("configured virtual pay is preferred over jsapi"),
+            _ => panic!("configured virtual pay is the only live checkout"),
+        }
+
+        config.wx_virtual_offer_id.clear();
+        config.wx_virtual_appkey_sandbox.clear();
+        config.pay_credentials_present = true;
+        config.wechat_mch_id = "1900000109".into();
+        match checkout_mode(&config) {
+            Checkout::Misconfigured(reason) => {
+                assert!(
+                    reason.contains("虚拟支付") || reason.contains("缺少"),
+                    "{reason}"
+                );
+            }
+            _ => panic!("merchant settings must not open a user-facing checkout"),
         }
     }
 
