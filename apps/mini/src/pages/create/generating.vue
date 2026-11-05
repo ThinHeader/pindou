@@ -6,6 +6,7 @@ import { errorOf, jobsApi } from '../../api/http'
 import type { JobStage, JobView } from '../../api/types'
 import { useCreateStore } from '../../stores/create'
 import { useCreditsStore } from '../../stores/credits'
+import { isContentPolicy, jobFailureCopy, jobFailureNote } from '../../utils/job-error'
 import { showTip } from '../../utils/ui'
 
 const create = useCreateStore()
@@ -31,12 +32,19 @@ const stages = computed<JobStage[]>(() => {
 })
 
 const failed = computed(() => job.value?.status === 'failed' || Boolean(localError.value))
-const headline = computed(() => (failed.value ? '这一步没跑通' : '正在生成色号图…'))
+const contentBlocked = computed(
+  () => job.value?.status === 'failed' && isContentPolicy(job.value?.error_code),
+)
+const headline = computed(() => {
+  if (contentBlocked.value) return '这张图出不了稿'
+  return failed.value ? '这一步没跑通' : '正在生成色号图…'
+})
 const subline = computed(() => {
   if (localError.value) return localError.value
-  if (job.value?.status === 'failed') return job.value.error || job.value.message
+  if (job.value?.status === 'failed') return jobFailureCopy(job.value)
   return '预计约 15–30 秒 · 请保持网络畅通'
 })
+const failureNote = computed(() => jobFailureNote(contentBlocked.value ? job.value?.error_code : null))
 const bar = computed(() => (failed.value ? progress.value : job.value?.progress || progress.value))
 const barLabel = computed(() => job.value?.message || (failed.value ? '出稿未完成' : '准备出稿'))
 
@@ -223,14 +231,23 @@ function dot(stage: JobStage, index: number) {
       <view class="bar"><view class="fill" :style="{ width: bar + '%' }" /></view>
       <view class="meta"><text>进度 {{ bar }}%</text><text>{{ barLabel }}</text></view>
     </view>
-    <view v-else class="note">可稍后再试，或换一张主体更清楚的照片。失败不计费，积分仍保留。</view>
+    <view v-else class="note">{{ failureNote }}</view>
 
     <view v-if="failed" class="actions">
-      <view class="btn primary" @click="retry">重试出稿</view>
-      <view class="row">
-        <view class="btn ghost" @click="changeParams">换参数</view>
-        <view class="btn soft" @click="changeImage">换一张图</view>
-      </view>
+      <template v-if="contentBlocked">
+        <view class="btn primary" @click="changeImage">换一张图</view>
+        <view class="row">
+          <view class="btn ghost" @click="retry">重试出稿</view>
+          <view class="btn soft" @click="changeParams">换参数</view>
+        </view>
+      </template>
+      <template v-else>
+        <view class="btn primary" @click="retry">重试出稿</view>
+        <view class="row">
+          <view class="btn ghost" @click="changeParams">换参数</view>
+          <view class="btn soft" @click="changeImage">换一张图</view>
+        </view>
+      </template>
     </view>
     <view v-else class="actions">
       <view class="btn ghost" @click="cancel">取消出稿</view>
