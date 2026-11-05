@@ -12,6 +12,22 @@ export function canRevise(card: ReviseCard): boolean {
   return card.badge === '我的' && !card.is_official && !card.is_template
 }
 
+/** 逐格检查，避免展开大底板。微信里对上万格做展开可能直接抛栈。 */
+export function cellsWithinPalette(cells: Uint8Array, paletteLength: number): boolean {
+  if (paletteLength <= 0) return false
+  for (let i = 0; i < cells.length; i += 1) {
+    if (cells[i] >= paletteLength) return false
+  }
+  return true
+}
+
+export function normalizeDraftId(raw: unknown): string {
+  if (typeof raw !== 'string' && typeof raw !== 'number') return ''
+  const id = String(raw).trim()
+  if (!id || id === 'undefined' || id === 'null') return ''
+  return id
+}
+
 export function encodeCellsB64(cells: Uint8Array): string {
   let out = ''
   let i = 0

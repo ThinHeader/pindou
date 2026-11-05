@@ -5,6 +5,8 @@ import {
   CellHistory,
   canRevise,
   cellsEqual,
+  cellsWithinPalette,
+  normalizeDraftId,
   decodeCellsB64,
   dominantIndex,
   encodeCellsB64,
@@ -72,6 +74,25 @@ test('undo restores the previous stroke and drops a no-op', () => {
   assert.equal(history.canRedo, false)
   assert.deepEqual([...(history.undo() as Uint8Array)], [0, 0])
   assert.equal(cellsEqual(Uint8Array.of(1), Uint8Array.of(1, 0)), false)
+})
+
+test('cells stay inside the palette without spreading the buffer', () => {
+  assert.equal(cellsWithinPalette(Uint8Array.of(0, 1, 2), 3), true)
+  assert.equal(cellsWithinPalette(Uint8Array.of(0, 3), 3), false)
+  assert.equal(cellsWithinPalette(Uint8Array.of(0), 0), false)
+  const big = new Uint8Array(104 * 104)
+  big[big.length - 1] = 8
+  assert.equal(cellsWithinPalette(big, 9), true)
+  big[10] = 9
+  assert.equal(cellsWithinPalette(big, 9), false)
+})
+
+test('draft ids from the route are trimmed and empty placeholders are dropped', () => {
+  assert.equal(normalizeDraftId('  abc  '), 'abc')
+  assert.equal(normalizeDraftId(undefined), '')
+  assert.equal(normalizeDraftId('undefined'), '')
+  assert.equal(normalizeDraftId('null'), '')
+  assert.equal(normalizeDraftId(''), '')
 })
 
 test('only the owner draft can be revised', () => {
