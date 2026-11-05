@@ -316,7 +316,40 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
 
 完成后 `charged` 为 true，`balance` 是扣分后的余额，`draft` 是稿件详情。`original_url` / `cartoon_url` / `preview_url` 指向对象存储里的原图、Seedream 中间图和珠图。`cartoon_url` 这个字段名是旧列，内容是 Seedream（或开发模拟）的平涂图，不是人物动漫化。`matted_url` 新任务为 null。
 
-失败时 HTTP 仍是 200，`status` 为 `failed`，`error` 说明原因，并写明本次未扣积分。`failed_stage` 会反映在对应步骤的 `state: "fail"` 上。用户看到的文案不带上游原文。配了 `DINGTALK_WEBHOOK_URL` 时，服务会另给钉钉群机器人发一条运营告警（正文含 `DINGTALK_KEYWORD`，生产为 `STRATEGY`，以及任务 id、阶段和上游错误摘要）。没配 webhook 则不发送。
+失败时 HTTP 仍是 200，`status` 为 `failed`。`error` 和 `message` 都是给用户看的说明，并写明本次未扣积分。`error` 仍然是文案，不是错误码。`error_code` 才是稳定业务错误码；没有单独分类的失败为 `null`，文案保持原来的通用说法（例如「出稿失败，请稍后重试。本次未扣积分。」）。`failed_stage` 会反映在对应步骤的 `state: "fail"` 上，该步的 `detail` 用同一句用户文案。用户看到的文案不带上游原文。配了 `DINGTALK_WEBHOOK_URL` 时，服务会另给钉钉群机器人发一条运营告警（正文含 `DINGTALK_KEYWORD`，生产为 `STRATEGY`，以及任务 id、阶段、用户文案和上游错误摘要）。没配 webhook 则不发送。告警里的上游摘要不因错误码而省略。
+
+版权或敏感内容被上游拦住时，`error_code` 为 `content_policy`。触发条件是上游错误体里的机器码（`error.code`、顶层 `code`，或 `error.type`），大小写不敏感，包含下面任一片段：
+
+- `SensitiveContent`（如 `OutputImageSensitiveContentDetected`、`InputImageSensitiveContentDetected`、`InputTextSensitiveContentDetected`、`OutputTextSensitiveContentDetected`、`SensitiveContentDetected` 及其 `.PolicyViolation` / `.PrivacyInformation` / `.SevereViolation` / `.Violence`）
+- `PolicyViolation`
+- `ContentPolicy`
+- `ContentFilter`
+- `DataInspection`（如 `DataInspectionFailed`）
+- `Copyright`（出现在错误码里）
+
+`message` 里出现同样的机器码，或火山这类原因 `copyright restrict`，也归这一条。文件名里偶然出现 copyright 不会命中。
+
+```json
+{
+  "status": "failed",
+  "message": "这张图受版权保护或内容受限，请换一张图或换个主体再试。本次未扣积分。",
+  "error": "这张图受版权保护或内容受限，请换一张图或换个主体再试。本次未扣积分。",
+  "error_code": "content_policy",
+  "charged": false
+}
+```
+
+这句文案不出现供应商、模型或深度合成说法。小程序按 `error_code` 优先展示它，并建议换图。本次不扣积分。其它失败示例：
+
+```json
+{
+  "status": "failed",
+  "message": "出稿失败，请稍后重试。本次未扣积分。",
+  "error": "出稿失败，请稍后重试。本次未扣积分。",
+  "error_code": null,
+  "charged": false
+}
+```
 
 ### `POST /api/v1/jobs/{id}/cancel`
 

@@ -151,7 +151,13 @@ export interface JobView {
   draft_id?: string | null
   draft?: DraftDetail | null
   balance?: number | null
+  /** 失败原因，给用户看。进行中和成功为空。 */
   error?: string | null
+  /**
+   * 稳定业务错误码。版权或敏感内容拦截为 `content_policy`，其它失败为空。
+   * 展示文案见 `JOB_ERROR_COPY`，不要直接把这个码显示出来。
+   */
+  error_code?: string | null
   charged: boolean
 }
 

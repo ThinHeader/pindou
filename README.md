@@ -142,7 +142,9 @@ Flash 大约 ¥0.12 / 张（约数）。MVP 只用 Flash，没有更高档的「
 
 积分：整次成功才扣 1 分，写在落稿的同一个事务里。中间任何一步失败或用户取消，都不扣，因此也没有退款流水。
 
-出稿失败且任务被标成 `failed` 后，如果配了 `DINGTALK_WEBHOOK_URL`，会异步给钉钉群机器人发一条 markdown。正文含 `DINGTALK_KEYWORD`（生产是 `STRATEGY`）、任务 id、阶段、用户看到的文案、上游错误摘要（例如 Seedream 的 code 和截断原因）、provider、珠板和时间（Asia/Shanghai）。原图只留对象 key，不带方舟密钥、用户 JWT 或 webhook token。告警发送失败只打 WARN，不影响出稿。未配置 webhook 则不发请求。
+出稿失败且任务被标成 `failed` 后，如果配了 `DINGTALK_WEBHOOK_URL`，会异步给钉钉群机器人发一条 markdown。正文含 `DINGTALK_KEYWORD`（生产是 `STRATEGY`）、任务 id、阶段、用户看到的文案、上游错误摘要（例如上游 code 和截断原因）、provider、珠板和时间（Asia/Shanghai）。原图只留对象 key，不带方舟密钥、用户 JWT 或 webhook token。告警发送失败只打 WARN，不影响出稿。未配置 webhook 则不发请求。
+
+上游因版权或敏感内容拒绝出图时（`OutputImageSensitiveContentDetected`、`PolicyViolation` 及同类机器码），任务的 `error_code` 为 `content_policy`，用户看到「这张图受版权保护或内容受限，请换一张图或换个主体再试。本次未扣积分。」其它失败仍是通用「请稍后重试」，`error_code` 为 null。钉钉正文继续带上游 code，不改成这句用户文案的替代品。
 
 ## 3. 测试
 

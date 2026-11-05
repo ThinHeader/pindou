@@ -64,7 +64,10 @@ pub struct JobView {
     pub draft_id: Option<Uuid>,
     pub draft: Option<DraftDetail>,
     pub balance: Option<i32>,
+    /// 失败原因，给用户看。进行中和成功为 null。含义不变：仍是文案，不是错误码。
     pub error: Option<String>,
+    /// 稳定业务错误码。版权或敏感内容拦截为 `content_policy`，其它失败为 null。
+    pub error_code: Option<String>,
     /// 只有 `done` 且已经写入扣减时为 true。
     pub charged: bool,
 }
@@ -74,6 +77,8 @@ struct Fail {
     message: String,
     /// 运营告警用的上游摘要。用户可见 `message` 仍然脱敏。
     upstream: Option<String>,
+    /// 小程序错误码。只有分类过的失败才有，例如 `content_policy`。
+    error_code: Option<String>,
 }
 
 fn fail(stage: &str, message: impl Into<String>) -> Fail {
@@ -81,6 +86,7 @@ fn fail(stage: &str, message: impl Into<String>) -> Fail {
         stage: stage.to_string(),
         message: message.into(),
         upstream: None,
+        error_code: None,
     }
 }
 
@@ -554,6 +560,7 @@ async fn mark_failed(state: &AppState, job_id: Uuid, fail: Fail) -> AppResult<()
             failed_stage = $2,
             error_message = $3,
             message = $3,
+            error_code = $4,
             updated_at = now()
         WHERE id = $1 AND status NOT IN ('done', 'cancelled', 'failed')
         "#,
@@ -561,6 +568,7 @@ async fn mark_failed(state: &AppState, job_id: Uuid, fail: Fail) -> AppResult<()
     .bind(job_id)
     .bind(&fail.stage)
     .bind(&fail.message)
+    .bind(&fail.error_code)
     .execute(&state.db)
     .await?;
     if updated.rows_affected() == 0 {
@@ -587,7 +595,7 @@ async fn mark_failed(state: &AppState, job_id: Uuid, fail: Fail) -> AppResult<()
 async fn load_job(state: &AppState, job_id: Uuid) -> AppResult<JobRow> {
     sqlx::query_as::<_, JobRow>(
         r#"
-        SELECT id, user_id, status, progress, message, error_message, failed_stage,
+        SELECT id, user_id, status, progress, message, error_message, error_code, failed_stage,
                board_size, color_count, palette_pref, remove_bg, cartoon_strength,
                subject_type, palette_brand, title, provider,
                original_key, matted_key, cartoon_key, preview_key,
@@ -652,6 +660,7 @@ async fn to_view(state: &AppState, user_id: Uuid, row: &JobRow) -> AppResult<Job
         draft,
         balance: row.balance_after,
         error: row.error_message.clone(),
+        error_code: row.error_code.clone(),
         charged: row.status == "done" && row.balance_after.is_some(),
     })
 }
@@ -774,11 +783,13 @@ fn is_terminal(status: &str) -> bool {
 }
 
 fn fail_vis(stage: &str, err: SeedreamError) -> Fail {
+    let error_code = err.client_code().map(str::to_string);
     let upstream = err.upstream_detail();
     Fail {
         stage: stage.into(),
         message: err.into_message(),
         upstream,
+        error_code,
     }
 }
 
@@ -788,6 +799,7 @@ fn db_fail(stage: &str, err: sqlx::Error) -> Fail {
         stage: stage.into(),
         message: "出稿失败，请稍后重试。本次未扣积分。".into(),
         upstream: Some("database".into()),
+        error_code: None,
     }
 }
 
@@ -824,6 +836,7 @@ struct JobRow {
     progress: i32,
     message: String,
     error_message: Option<String>,
+    error_code: Option<String>,
     failed_stage: Option<String>,
     board_size: i32,
     color_count: i32,
@@ -899,7 +912,49 @@ mod tests {
         let fail = fail_vis("seedream", SeedreamError::Timeout);
         assert_eq!(fail.stage, "seedream");
         assert_eq!(fail.upstream.as_deref(), Some("timeout"));
+        assert!(fail.error_code.is_none());
         assert!(fail.message.contains("未扣积分"));
         assert!(!fail.message.contains("timeout"));
+    }
+
+    #[test]
+    fn content_policy_failure_keeps_the_client_code_and_upstream() {
+        let err = seedream::remote_from(&json!({
+            "error": {
+                "code": "OutputImageSensitiveContentDetected.PolicyViolation",
+                "message": "copyright restrict"
+            }
+        }));
+        let fail = fail_vis("seedream", err);
+        assert_eq!(fail.stage, "seedream");
+        assert_eq!(
+            fail.error_code.as_deref(),
+            Some(seedream::CONTENT_POLICY_CODE)
+        );
+        assert_eq!(fail.message, seedream::CONTENT_POLICY_MESSAGE);
+        let upstream = fail.upstream.expect("upstream");
+        assert!(upstream.contains("OutputImageSensitiveContentDetected.PolicyViolation"));
+        assert!(!fail.message.contains("PolicyViolation"));
+        assert!(!fail.message.contains("Seedream"));
+
+        let mut row = snap("failed", Some("seedream"), 52);
+        row.error_message = Some(seedream::CONTENT_POLICY_MESSAGE.into());
+        let stages = build_stages(&row);
+        assert_eq!(stages[1].state, "fail");
+        assert_eq!(stages[1].detail, seedream::CONTENT_POLICY_MESSAGE);
+    }
+
+    #[test]
+    fn ordinary_upstream_failure_has_no_client_code() {
+        let err = seedream::remote_from(&json!({
+            "error": { "code": "InvalidParameter", "message": "size must be 1K" }
+        }));
+        let fail = fail_vis("seedream", err);
+        assert!(fail.error_code.is_none());
+        assert_eq!(fail.message, "出稿失败，请稍后重试。本次未扣积分。");
+        assert_eq!(
+            fail.upstream.as_deref(),
+            Some("InvalidParameter: size must be 1K")
+        );
     }
 }

@@ -26,6 +26,14 @@ pub const SEEDREAM_IMAGE_SIZE: &str = "1K";
 
 pub const ARK_DEFAULT_BASE: &str = "https://ark.cn-beijing.volces.com";
 
+/// 出稿任务上的稳定业务错误码，和 `insufficient_credits` 一样用小写蛇形。
+/// 版权保护和敏感内容拦截都归这一条。其它失败不填码。
+pub const CONTENT_POLICY_CODE: &str = "content_policy";
+
+/// 小程序直接展示的文案。不出现供应商、模型或深度合成说法。
+pub const CONTENT_POLICY_MESSAGE: &str =
+    "这张图受版权保护或内容受限，请换一张图或换个主体再试。本次未扣积分。";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubjectKind {
     Person,
@@ -68,11 +76,13 @@ impl SubjectKind {
 #[derive(Debug)]
 pub enum SeedreamError {
     Timeout,
-    /// `message` 给用户看，已经脱敏。`upstream` 只进运营告警，例如 Seedream code 和截断后的原因。
+    /// `message` 给用户看，已经脱敏。`upstream` 只进运营告警，例如上游 code 和截断后的原因。
+    /// `client_code` 是小程序用来选文案的稳定业务码，目前只有版权/敏感内容拦截会填。
     Remote {
         message: String,
         retryable: bool,
         upstream: Option<String>,
+        client_code: Option<&'static str>,
     },
     Decode,
     Unconfigured,
@@ -86,6 +96,14 @@ impl SeedreamError {
             Self::Decode => Some("decode".into()),
             Self::Unconfigured => Some("unconfigured".into()),
             Self::Remote { upstream, .. } => upstream.clone(),
+        }
+    }
+
+    /// 给小程序的稳定错误码。没有单独分类的失败返回 `None`，客户端继续用通用文案。
+    pub fn client_code(&self) -> Option<&'static str> {
+        match self {
+            Self::Remote { client_code, .. } => *client_code,
+            Self::Timeout | Self::Decode | Self::Unconfigured => None,
         }
     }
 
@@ -397,38 +415,104 @@ fn remote(message: impl Into<String>, retryable: bool, upstream: Option<String>)
         upstream: upstream
             .map(|text| text.trim().to_string())
             .filter(|text| !text.is_empty()),
+        client_code: None,
     }
 }
 
-fn remote_from(value: &Value) -> SeedreamError {
+/// 上游 `error.code`（或同类机器码）是否属于版权 / 敏感内容保护。
+///
+/// 只认稳定的错误码片段，不把文件名里偶然出现的单词当成拦截。
+/// `message` 仅在带有同样的机器码，或火山这类「copyright restrict」原因时命中。
+pub fn is_content_policy(code: &str, message: &str) -> bool {
+    policy_code(code) || policy_message(message)
+}
+
+fn policy_code(code: &str) -> bool {
+    let folded = compact_token(code);
+    POLICY_CODE_MARKERS
+        .iter()
+        .any(|marker| folded.contains(marker))
+}
+
+fn policy_message(message: &str) -> bool {
+    let folded = compact_token(message);
+    POLICY_MESSAGE_MARKERS
+        .iter()
+        .any(|marker| folded.contains(marker))
+        || folded.contains("copyrightrestrict")
+}
+
+/// 去掉分隔符再比较，这样 `PolicyViolation` 和 `policy_violation` 是同一类码。
+fn compact_token(text: &str) -> String {
+    text.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
+}
+
+const POLICY_CODE_MARKERS: &[&str] = &[
+    "sensitivecontent",
+    "policyviolation",
+    "contentpolicy",
+    "contentfilter",
+    "datainspection",
+    "copyright",
+];
+
+const POLICY_MESSAGE_MARKERS: &[&str] = &[
+    "sensitivecontent",
+    "policyviolation",
+    "contentpolicy",
+    "contentfilter",
+    "datainspection",
+];
+
+pub(crate) fn remote_from(value: &Value) -> SeedreamError {
     let msg = value
         .pointer("/error/message")
         .and_then(|item| item.as_str())
         .or_else(|| value.get("message").and_then(|item| item.as_str()))
+        .or_else(|| value.get("error").and_then(|item| item.as_str()))
         .unwrap_or("");
     let code = value
         .pointer("/error/code")
         .and_then(|item| item.as_str())
+        .or_else(|| value.get("code").and_then(|item| item.as_str()))
         .unwrap_or("");
+    let kind = value
+        .pointer("/error/type")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let code_for_match = if kind.is_empty() {
+        code.to_string()
+    } else {
+        format!("{code} {kind}")
+    };
+    let policy = is_content_policy(&code_for_match, msg);
     let reason = clip(msg.trim(), 180);
-    let code = clip(code.trim(), 80);
-    let summary = match (code.is_empty(), reason.is_empty()) {
+    let code_shown = clip(code.trim(), 80);
+    let summary = match (code_shown.is_empty(), reason.is_empty()) {
         (true, true) => None,
-        (false, true) => Some(code.clone()),
+        (false, true) => Some(code_shown.clone()),
         (true, false) => Some(reason),
-        (false, false) => Some(format!("{code}: {reason}")),
+        (false, false) => Some(format!("{code_shown}: {reason}")),
     };
     let summary = summary
         .map(|text| crate::services::alert::redact(&text, &[]))
         .filter(|text| !text.is_empty());
     if let Some(shown) = summary.as_deref() {
         let short: String = shown.chars().take(80).collect();
-        tracing::warn!(code = %code, message = %short, "出稿上游返回错误");
+        tracing::warn!(code = %code_shown, message = %short, "出稿上游返回错误");
     }
     SeedreamError::Remote {
-        message: "出稿失败，请稍后重试。本次未扣积分。".into(),
+        message: if policy {
+            CONTENT_POLICY_MESSAGE.into()
+        } else {
+            "出稿失败，请稍后重试。本次未扣积分。".into()
+        },
         retryable: false,
         upstream: summary,
+        client_code: policy.then_some(CONTENT_POLICY_CODE),
     }
 }
 
@@ -616,6 +700,7 @@ mod tests {
             err.upstream_detail().as_deref(),
             Some("InvalidParameter: the model doubao-seedream does not exist")
         );
+        assert_eq!(err.client_code(), None);
         let text = err.into_message();
         assert_eq!(text, "出稿失败，请稍后重试。本次未扣积分。");
         assert!(!text.to_lowercase().contains("seedream"));
@@ -631,6 +716,8 @@ mod tests {
                 "message": "copyright restrict https://cdn.example.com/files/uploads/ref.png?access_token=supersecrettokenvalue"
             }
         }));
+        assert_eq!(err.client_code(), Some(CONTENT_POLICY_CODE));
+        assert!(!err.retryable());
         let upstream = err.upstream_detail().expect("upstream");
         assert!(upstream.contains("OutputImageSensitiveContentDetected.PolicyViolation"));
         assert!(upstream.to_lowercase().contains("copyright"));
@@ -638,7 +725,8 @@ mod tests {
         assert!(!upstream.contains("https://"), "{upstream}");
         assert!(!upstream.contains("supersecrettokenvalue"), "{upstream}");
         let user = err.into_message();
-        assert_eq!(user, "出稿失败，请稍后重试。本次未扣积分。");
+        assert_eq!(user, CONTENT_POLICY_MESSAGE);
+        assert_user_copy_stays_plain(&user);
         assert!(!user.contains("PolicyViolation"));
         assert!(!user.to_lowercase().contains("copyright"));
 
@@ -676,13 +764,111 @@ mod tests {
             "{text}"
         );
         let message_line = text.lines().find(|line| line.contains("message:")).unwrap();
+        assert!(message_line.contains("版权保护"), "{message_line}");
         assert!(!message_line.contains("PolicyViolation"), "{message_line}");
+        assert_user_copy_stays_plain(message_line);
         assert!(
             !outbound.body.contains("unit-test-token"),
             "{}",
             outbound.body
         );
         assert!(!outbound.url.contains("sign="));
+    }
+
+    #[test]
+    fn content_policy_codes_use_one_client_code_and_plain_copy() {
+        let codes = [
+            "OutputImageSensitiveContentDetected.PolicyViolation",
+            "OutputImageSensitiveContentDetected",
+            "InputImageSensitiveContentDetected",
+            "InputImageSensitiveContentDetected.PrivacyInformation",
+            "InputTextSensitiveContentDetected",
+            "OutputTextSensitiveContentDetected",
+            "SensitiveContentDetected",
+            "SensitiveContentDetected.SevereViolation",
+            "SensitiveContentDetected.Violence",
+            "PolicyViolation",
+            "ContentPolicyViolation",
+            "ContentFilter",
+            "DataInspectionFailed",
+            "Copyright",
+            "outputimagesensitivecontentdetected.policyviolation",
+        ];
+        for code in codes {
+            let err = remote_from(&json!({
+                "error": { "code": code, "message": "blocked" }
+            }));
+            assert_eq!(err.client_code(), Some(CONTENT_POLICY_CODE), "{code}");
+            assert!(!err.retryable(), "{code}");
+            let text = err.into_message();
+            assert_eq!(text, CONTENT_POLICY_MESSAGE, "{code}");
+            assert_ne!(text, "出稿失败，请稍后重试。本次未扣积分。");
+            assert_user_copy_stays_plain(&text);
+            assert!(!text.contains(code), "{code} leaked into {text}");
+        }
+    }
+
+    #[test]
+    fn content_policy_also_matches_type_top_level_code_and_copyright_restrict() {
+        let nested = remote_from(&json!({
+            "error": { "code": "InvalidParameter", "type": "policy_violation", "message": "no" }
+        }));
+        assert_eq!(nested.client_code(), Some(CONTENT_POLICY_CODE));
+
+        let top = remote_from(&json!({
+            "code": "OutputImageSensitiveContentDetected",
+            "message": "blocked"
+        }));
+        assert_eq!(top.client_code(), Some(CONTENT_POLICY_CODE));
+        assert!(top
+            .upstream_detail()
+            .unwrap()
+            .contains("OutputImageSensitiveContentDetected"));
+
+        let phrase = remote_from(&json!({
+            "error": { "code": "BadRequest", "message": "copyright restrict" }
+        }));
+        assert_eq!(phrase.client_code(), Some(CONTENT_POLICY_CODE));
+        assert_eq!(phrase.into_message(), CONTENT_POLICY_MESSAGE);
+
+        let stuffed = remote_from(&json!({
+            "error": "OutputImageSensitiveContentDetected.PolicyViolation"
+        }));
+        assert_eq!(stuffed.client_code(), Some(CONTENT_POLICY_CODE));
+    }
+
+    #[test]
+    fn filename_copyright_does_not_become_content_policy() {
+        let err = remote_from(&json!({
+            "error": {
+                "code": "InvalidParameter",
+                "message": "failed to read uploads/copyright.png"
+            }
+        }));
+        assert_eq!(err.client_code(), None);
+        assert_eq!(err.into_message(), "出稿失败，请稍后重试。本次未扣积分。");
+    }
+
+    fn assert_user_copy_stays_plain(text: &str) {
+        let lower = text.to_lowercase();
+        for banned in [
+            "seedream",
+            "doubao",
+            "policyviolation",
+            "sensitivecontent",
+            "copyright",
+            "模型",
+            "深度合成",
+            "豆包",
+            "方舟",
+            "大模型",
+        ] {
+            assert!(
+                !text.contains(banned) && !lower.contains(banned),
+                "{banned} in {text}"
+            );
+        }
+        assert!(!text.contains("AI"), "{text}");
     }
 
     #[test]
