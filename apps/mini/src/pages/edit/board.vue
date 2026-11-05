@@ -4,6 +4,7 @@ import { computed, getCurrentInstance, nextTick, ref } from 'vue'
 import { draftsApi, errorOf } from '../../api/http'
 import type { PaletteColor } from '../../api/types'
 import { paintBoard, codeVisible, type PaintCtx } from '../../utils/board-paint'
+import { boardViewport } from '../../utils/board-viewport'
 import {
   CellHistory,
   canRevise,
@@ -47,6 +48,7 @@ const tools: Array<{ id: Tool; label: string }> = [
 
 const pageHeight = ref(600)
 const stageHeight = ref(280)
+const stageWidth = ref(375)
 const loading = ref(true)
 const ready = ref(false)
 const saving = ref(false)
@@ -82,6 +84,13 @@ let panLast: { x: number; y: number } | null = null
 let viewWidth = 375
 
 const cssSize = computed(() => boardSize.value * cellPx.value)
+const frame = computed(() =>
+  boardViewport({
+    canvas: cssSize.value,
+    viewWidth: stageWidth.value || viewWidth,
+    viewHeight: stageHeight.value,
+  }),
+)
 const pegs = computed(() => palette.value.reduce((sum, item) => sum + item.count, 0))
 const usedColors = computed(() => palette.value.filter((item) => item.count > 0).length)
 const ranked = computed(() =>
@@ -98,6 +107,7 @@ onLoad((query) => {
     const info = uni.getSystemInfoSync()
     pageHeight.value = info.windowHeight
     viewWidth = info.windowWidth
+    stageWidth.value = info.windowWidth
   } catch {
     pageHeight.value = 600
   }
@@ -193,7 +203,7 @@ async function boot(id: string) {
     syncHist()
     ready.value = true
     await nextTick()
-    measureStage()
+    await measureStage()
     await initCanvas()
   } catch (e) {
     showIdle(errorOf(e).message || '稿件读不出来', '可以重试，或回到稿件库另选一张。', true)
@@ -220,9 +230,10 @@ function zoom(dir: number) {
     return
   }
   cellPx.value = next
-  scrollLeft.value = 0
-  scrollTop.value = 0
-  nextTick(() => resizeAndPaint())
+  nextTick(() => {
+    resizeAndPaint()
+    centerBoard()
+  })
 }
 
 function toggleCodes() {
@@ -236,18 +247,47 @@ function toggleMat() {
   nextTick(() => measureStage())
 }
 
-function measureStage() {
-  if (!proxy) return
-  const q = uni.createSelectorQuery().in(proxy)
-  q.select('.page').boundingClientRect()
-  q.select('.toolbar').boundingClientRect()
-  q.select('.dock').boundingClientRect()
-  q.exec((res) => {
-    const rows = (res || []) as Array<{ height?: number } | null>
-    const pageH = rows[0]?.height || pageHeight.value
-    const toolH = rows[1]?.height || 0
-    const dockH = rows[2]?.height || 0
-    if (toolH && dockH) stageHeight.value = Math.max(160, pageH - toolH - dockH)
+function measureStage(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!proxy) {
+      centerBoard()
+      resolve()
+      return
+    }
+    const q = uni.createSelectorQuery().in(proxy)
+    q.select('.page').boundingClientRect()
+    q.select('.toolbar').boundingClientRect()
+    q.select('.dock').boundingClientRect()
+    q.select('.stage').boundingClientRect()
+    q.exec((res) => {
+      const rows = (res || []) as Array<{ width?: number; height?: number } | null>
+      const pageH = rows[0]?.height || pageHeight.value
+      const toolH = rows[1]?.height || 0
+      const dockH = rows[2]?.height || 0
+      const width = rows[3]?.width || 0
+      if (width) stageWidth.value = width
+      if (toolH && dockH) stageHeight.value = Math.max(160, pageH - toolH - dockH)
+      centerBoard()
+      resolve()
+    })
+  })
+}
+
+function centerBoard() {
+  const next = frame.value
+  placeScroll(scrollLeft, next.scrollLeft)
+  placeScroll(scrollTop, next.scrollTop)
+}
+
+function placeScroll(target: { value: number }, next: number) {
+  if (next === 0) {
+    target.value = 0
+    return
+  }
+  if (target.value === next) return
+  target.value = 0
+  nextTick(() => {
+    target.value = next
   })
 }
 
@@ -413,7 +453,7 @@ function onMove(e: unknown) {
   if (!p) return
   if (tool.value === 'pan') {
     if (!panLast) return
-    const maxLeft = Math.max(0, cssSize.value - viewWidth)
+    const maxLeft = Math.max(0, cssSize.value - (stageWidth.value || viewWidth))
     const maxTop = Math.max(0, cssSize.value - stageHeight.value)
     scrollLeft.value = clamp(scrollLeft.value - (p.x - panLast.x), 0, maxLeft)
     scrollTop.value = clamp(scrollTop.value - (p.y - panLast.y), 0, maxTop)
@@ -535,18 +575,28 @@ function wait(ms: number) {
       :scroll-top="scrollTop"
       :style="{ height: stageHeight + 'px' }"
     >
-      <canvas
-        id="boardCanvas"
-        canvas-id="boardCanvas"
-        type="2d"
-        class="board"
-        disable-scroll
-        :style="{ width: cssSize + 'px', height: cssSize + 'px' }"
-        @touchstart="onStart"
-        @touchmove.stop.prevent="onMove"
-        @touchend="onEnd"
-        @touchcancel="onEnd"
-      />
+      <view
+        class="stage-pad"
+        :style="{
+          width: cssSize + 'px',
+          height: cssSize + 'px',
+          paddingLeft: frame.offsetX + 'px',
+          paddingTop: frame.offsetY + 'px',
+        }"
+      >
+        <canvas
+          id="boardCanvas"
+          canvas-id="boardCanvas"
+          type="2d"
+          class="board"
+          disable-scroll
+          :style="{ width: cssSize + 'px', height: cssSize + 'px' }"
+          @touchstart="onStart"
+          @touchmove.stop.prevent="onMove"
+          @touchend="onEnd"
+          @touchcancel="onEnd"
+        />
+      </view>
     </scroll-view>
     <view class="dock">
       <view class="info">
@@ -631,6 +681,7 @@ function wait(ms: number) {
 .tool.on text { color: #fff; }
 .tool.off { opacity: 0.4; }
 .stage { width: 100%; background: #efe8e2; }
+.stage-pad { box-sizing: content-box; }
 .board { display: block; }
 .dock { background: $card; border-top: 1rpx solid $line; padding: 8rpx 16rpx 16rpx; }
 .info { display: flex; align-items: center; gap: 12rpx; min-width: 0; }
