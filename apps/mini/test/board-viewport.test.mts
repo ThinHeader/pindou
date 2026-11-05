@@ -1,40 +1,32 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { boardViewport } from '../src/utils/board-viewport.ts'
+import { boardCssSize, fitCellSize } from '../src/utils/board-viewport.ts'
 
-function centers(canvas: number, viewWidth: number, viewHeight: number) {
-  const frame = boardViewport({ canvas, viewWidth, viewHeight })
-  const dx = frame.scrollLeft + viewWidth / 2 - (frame.offsetX + canvas / 2)
-  const dy = frame.scrollTop + viewHeight / 2 - (frame.offsetY + canvas / 2)
-  return { frame, dx, dy }
-}
-
-test('a canvas smaller than the stage is centered without scrolling', () => {
-  const { frame, dx, dy } = centers(312, 390, 420)
-  assert.equal(frame.scrollLeft, 0)
-  assert.equal(frame.scrollTop, 0)
-  assert.equal(frame.offsetX, 39)
-  assert.equal(frame.offsetY, 54)
-  assert.ok(Math.abs(dx) <= 0.5)
-  assert.ok(Math.abs(dy) <= 0.5)
+test('52, 78, and 104 boards fill the workspace width', () => {
+  for (const side of [52, 78, 104]) {
+    for (const width of [320, 375, 390, 414, 428, 430]) {
+      const cell = fitCellSize(side, width)
+      assert.equal(boardCssSize(side, cell), width)
+    }
+  }
 })
 
-test('a canvas larger than the stage is centered by the scroll offset', () => {
-  const { frame, dx, dy } = centers(520, 390, 360)
-  assert.equal(frame.offsetX, 0)
-  assert.equal(frame.offsetY, 0)
-  assert.equal(frame.scrollLeft, 65)
-  assert.equal(frame.scrollTop, 80)
-  assert.ok(Math.abs(dx) <= 0.5)
-  assert.ok(Math.abs(dy) <= 0.5)
+test('a 104 board no longer stays at the old 3px cell and a side gap', () => {
+  const cell = fitCellSize(104, 390)
+  assert.ok(cell > 3)
+  assert.equal(boardCssSize(104, cell), 390)
+  assert.notEqual(boardCssSize(104, 3), 390)
 })
 
-test('each axis centers on its own when only one side overflows', () => {
-  const { frame, dx, dy } = centers(500, 300, 600)
-  assert.equal(frame.offsetX, 0)
-  assert.equal(frame.scrollLeft, 100)
-  assert.equal(frame.offsetY, 50)
-  assert.equal(frame.scrollTop, 0)
-  assert.ok(Math.abs(dx) <= 0.5)
-  assert.ok(Math.abs(dy) <= 0.5)
+test('the backing store stays inside the canvas cap on a wide workspace', () => {
+  const cell = fitCellSize(52, 5000, 2048)
+  assert.equal(cell, Math.floor(2048 / 52))
+  assert.ok(boardCssSize(52, cell) <= 2048)
+})
+
+test('empty measurements still produce a finite cell', () => {
+  const cell = fitCellSize(0, -10)
+  assert.ok(cell > 0)
+  assert.equal(Number.isFinite(cell), true)
+  assert.equal(boardCssSize(0, cell) >= 1, true)
 })

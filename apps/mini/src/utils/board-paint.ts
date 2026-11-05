@@ -12,6 +12,7 @@ export interface PaintCtx {
   lineTo(x: number, y: number): void
   stroke(): void
   fillText(text: string, x: number, y: number): void
+  setTransform?(a: number, b: number, c: number, d: number, e: number, f: number): void
 }
 
 export interface BoardSwatch {
