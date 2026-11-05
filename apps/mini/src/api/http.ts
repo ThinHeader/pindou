@@ -1,4 +1,5 @@
 import { notifySessionExpired, refreshSessionSingleFlight, sessionRefreshBound } from './session'
+import { draftCardsFrom, errorText, unwrapBody } from './payload'
 import type {
   ApiError,
   CreditOrder,
@@ -7,7 +8,6 @@ import type {
   WxPayParams,
   CreditsMe,
   CreditsMutation,
-  DraftCard,
   DraftDetail,
   JobView,
   LedgerItem,
@@ -53,18 +53,25 @@ function send<T>(path: string, method: Method, data?: object): Promise<Ok<T> | E
       data: data as UniApp.RequestOptions['data'],
       header,
       success: (res) => {
-        const body = res.data as ApiError & T
-        if (res.statusCode >= 200 && res.statusCode < 300) {
+        const body = unwrapBody(res.data)
+        const record = body && typeof body === 'object' && !Array.isArray(body) ? (body as ApiError) : null
+        const status = Number(res.statusCode)
+        const statusOk = status >= 200 && status < 300
+        // 部分基础库成功时 statusCode 为 0，但 body 已经是稿件列表。
+        const statusMissing = !Number.isFinite(status) || status === 0
+        if (statusOk || (statusMissing && draftCardsFrom(body))) {
           resolve({ ok: true, data: body as T })
           return
         }
+        const code = typeof record?.error === 'string' ? record.error : undefined
         resolve({
           ok: false,
           hadAuth,
           error: {
-            statusCode: res.statusCode,
-            error: body?.error,
-            message: body?.message || '请求失败',
+            statusCode: Number.isFinite(status) ? status : undefined,
+            error: code,
+            message: errorText(body, '请求失败'),
+            data: body,
           },
         })
       },
@@ -302,10 +309,20 @@ export const draftsApi = {
     subject_type?: string
     palette_brand?: string
   }) => http.post<JobView>('/api/v1/drafts/generate', body),
-  list: (tab: string, q = '') =>
-    http.get<{ items: DraftCard[] }>(
-      `/api/v1/drafts?tab=${encodeURIComponent(tab)}&q=${encodeURIComponent(q)}`,
-    ),
+  list: async (tab: string, q = '') => {
+    const path = `/api/v1/drafts?tab=${encodeURIComponent(tab)}&q=${encodeURIComponent(q)}`
+    try {
+      const data = await http.get<unknown>(path)
+      const cards = draftCardsFrom(data)
+      if (cards) return { items: cards }
+      throw { message: '稿件列表格式不对' }
+    } catch (e) {
+      const err = errorOf(e)
+      const cards = draftCardsFrom(err.data) || draftCardsFrom(err.message) || draftCardsFrom(e)
+      if (cards && cards.length) return { items: cards }
+      throw { ...err, message: errorText(e, '稿件加载失败') }
+    }
+  },
   detail: (id: string) => http.get<DraftDetail>(`/api/v1/drafts/${id}`),
   rename: (id: string, title: string) => http.put<DraftDetail>(`/api/v1/drafts/${id}`, { title }),
   remove: (id: string) =>

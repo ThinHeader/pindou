@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { computed, getCurrentInstance, nextTick, ref } from 'vue'
-import { draftsApi, errorOf } from '../../api/http'
+import { draftsApi } from '../../api/http'
+import { readableError } from '../../api/payload'
 import type { PaletteColor } from '../../api/types'
 import { paintBoard, codeVisible, type PaintCtx } from '../../utils/board-paint'
 import {
@@ -196,7 +197,7 @@ async function boot(id: string) {
     measureStage()
     await initCanvas()
   } catch (e) {
-    showIdle(errorOf(e).message || '稿件读不出来', '可以重试，或回到稿件库另选一张。', true)
+    showIdle(readableError(e, '稿件读不出来'), '可以重试，或回到稿件库另选一张。', true)
     showError(e, '稿件读不出来')
   } finally {
     loading.value = false

@@ -2,6 +2,8 @@ export interface ApiError {
   statusCode?: number
   error?: string
   message?: string
+  /** 原始响应体。message 不是字符串时，列表还能从这里把稿件认出来。 */
+  data?: unknown
   /** 登录过期已引导去登录页，调用方不必再弹错误。 */
   silent?: boolean
 }
