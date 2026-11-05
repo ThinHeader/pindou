@@ -1,4 +1,5 @@
-//! 微信支付 JSAPI：假微信预下单 + 本地验签回调。不产生真实扣款。
+//! 商户 JSAPI 不能再给积分充值下单。配齐商户参数时下单返回 503，也不会请求预下单。
+//! 回调验签失败不加积分。不产生真实扣款。
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,12 +11,10 @@ use axum::routing::post;
 use axum::{Json, Router};
 use base64::Engine;
 use http_body_util::BodyExt;
-use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
-use rsa::pkcs8::{
-    DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding,
-};
-use rsa::signature::{SignatureEncoding, Signer, Verifier};
-use rsa::{RsaPrivateKey, RsaPublicKey};
+use rsa::pkcs1v15::SigningKey;
+use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
+use rsa::signature::{SignatureEncoding, Signer};
+use rsa::RsaPrivateKey;
 use serde_json::{json, Value};
 use sha2::Sha256;
 use tower::ServiceExt;
@@ -30,7 +29,6 @@ const NOTIFY_URL: &str = "https://pay.example.com/api/v1/pay/wechat/notify";
 
 struct Keys {
     merchant_private: String,
-    merchant_public: String,
     platform_private: String,
     platform_public: String,
 }
@@ -38,11 +36,10 @@ struct Keys {
 fn keys() -> &'static Keys {
     static KEYS: OnceLock<Keys> = OnceLock::new();
     KEYS.get_or_init(|| {
-        let (merchant_private, merchant_public) = gen_pem();
+        let (merchant_private, _) = gen_pem();
         let (platform_private, platform_public) = gen_pem();
         Keys {
             merchant_private,
-            merchant_public,
             platform_private,
             platform_public,
         }
@@ -66,30 +63,13 @@ fn sign_sha256(private_pem: &str, message: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(signing.sign(message).to_bytes())
 }
 
-fn verify_sha256(public_pem: &str, message: &[u8], signature_b64: &str) -> bool {
-    let key = RsaPublicKey::from_public_key_pem(public_pem).unwrap();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(signature_b64)
-        .unwrap();
-    let signature = Signature::try_from(bytes.as_slice()).unwrap();
-    VerifyingKey::<Sha256>::new(key)
-        .verify(message, &signature)
-        .is_ok()
-}
-
 #[derive(Clone)]
 struct FakeState {
-    hit: Arc<Mutex<Option<Hit>>>,
+    hit: Arc<Mutex<bool>>,
 }
 
-struct Hit {
-    raw_body: Vec<u8>,
-    authorization: String,
-    serial_header: String,
-}
-
-async fn spawn_fake_wechat() -> (String, Arc<Mutex<Option<Hit>>>) {
-    let hit = Arc::new(Mutex::new(None));
+async fn spawn_fake_wechat() -> (String, Arc<Mutex<bool>>) {
+    let hit = Arc::new(Mutex::new(false));
     let app = Router::new()
         .route("/v3/pay/transactions/jsapi", post(prepay))
         .with_state(FakeState { hit: hit.clone() });
@@ -107,22 +87,8 @@ async fn spawn_fake_wechat() -> (String, Arc<Mutex<Option<Hit>>>) {
     (format!("http://{addr}"), hit)
 }
 
-async fn prepay(State(state): State<FakeState>, headers: HeaderMap, body: Bytes) -> Json<Value> {
-    let authorization = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let serial_header = headers
-        .get("wechatpay-serial")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    *state.hit.lock().unwrap() = Some(Hit {
-        raw_body: body.to_vec(),
-        authorization,
-        serial_header,
-    });
+async fn prepay(State(state): State<FakeState>, _headers: HeaderMap, _body: Bytes) -> Json<Value> {
+    *state.hit.lock().unwrap() = true;
     Json(json!({ "prepay_id": "wx_test_prepay_001" }))
 }
 
@@ -238,14 +204,6 @@ async fn balance(app: &axum::Router, token: &str) -> i64 {
     body["balance"].as_i64().unwrap()
 }
 
-fn auth_field<'a>(header: &'a str, key: &str) -> &'a str {
-    let pattern = format!("{key}=\"");
-    let start = header.find(&pattern).expect(key) + pattern.len();
-    let rest = &header[start..];
-    let end = rest.find('"').unwrap();
-    &rest[..end]
-}
-
 fn signed_notify(
     transaction: &Value,
     event_type: &str,
@@ -338,94 +296,41 @@ async fn partial_credentials_never_grant_credits() {
 }
 
 #[tokio::test]
-async fn jsapi_credits_once_and_rejects_bad_or_unpaid() {
+async fn merchant_jsapi_cannot_open_a_credit_order() {
     let (api_base, hit) = spawn_fake_wechat().await;
     let app = live_app(&api_base).await;
     let code = format!("mock:pay-live-{}", Uuid::new_v4());
-    let openid = code.clone();
     let token = login(&app, &code).await;
     assert_eq!(balance(&app, &token).await, 0);
 
     let (status, packs) = call(&app, "GET", "/api/v1/credits/packs", None, None).await;
     assert_eq!(status, StatusCode::OK, "{packs}");
-    assert_eq!(packs["pay_mode"], "wechat");
+    assert_eq!(packs["pay_mode"], "misconfigured");
     assert_eq!(packs["mock"], false);
+    assert_ne!(packs["pay_mode"], "wechat");
 
-    let (status, order) = call(
-        &app,
-        "POST",
-        "/api/v1/credits/orders",
-        Some(&token),
-        Some(json!({ "pack_code": "small" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{order}");
-    assert_eq!(order["mock"], false);
-    assert_eq!(order["status"], "created");
-    assert_eq!(order["amount_fen"], 600);
-    let order_id = order["order_id"].as_str().unwrap().to_string();
-    let out_trade_no = order["out_trade_no"].as_str().unwrap().to_string();
-    let params = &order["pay_params"];
-    assert_eq!(params["signType"], "RSA");
-    assert_eq!(params["package"], "prepay_id=wx_test_prepay_001");
-    let pay_message = format!(
-        "{APP_ID}\n{}\n{}\n{}\n",
-        params["timeStamp"].as_str().unwrap(),
-        params["nonceStr"].as_str().unwrap(),
-        params["package"].as_str().unwrap()
-    );
-    assert!(
-        verify_sha256(
-            &keys().merchant_public,
-            pay_message.as_bytes(),
-            params["paySign"].as_str().unwrap()
-        ),
-        "小程序 paySign 与文档签名串不一致"
-    );
-
-    let captured = hit.lock().unwrap().take().expect("fake wechat saw prepay");
-    assert!(captured
-        .authorization
-        .starts_with("WECHATPAY2-SHA256-RSA2048 "));
-    assert_eq!(auth_field(&captured.authorization, "mchid"), MCH_ID);
-    assert_eq!(auth_field(&captured.authorization, "serial_no"), MCH_SERIAL);
-    assert_eq!(captured.serial_header, PLATFORM_SERIAL);
-    let timestamp = auth_field(&captured.authorization, "timestamp");
-    let nonce = auth_field(&captured.authorization, "nonce_str");
-    let signature = auth_field(&captured.authorization, "signature").to_string();
-    let mut message =
-        format!("POST\n/v3/pay/transactions/jsapi\n{timestamp}\n{nonce}\n").into_bytes();
-    message.extend_from_slice(&captured.raw_body);
-    message.push(b'\n');
-    assert!(
-        verify_sha256(&keys().merchant_public, &message, &signature),
-        "预下单请求签名与文档不一致"
-    );
-    let sent: Value = serde_json::from_slice(&captured.raw_body).unwrap();
-    assert_eq!(sent["appid"], APP_ID);
-    assert_eq!(sent["mchid"], MCH_ID);
-    assert_eq!(sent["out_trade_no"], out_trade_no);
-    assert_eq!(sent["notify_url"], NOTIFY_URL);
-    assert_eq!(sent["amount"]["total"], 600);
-    assert_eq!(sent["payer"]["openid"], openid);
-    assert_eq!(balance(&app, &token).await, 0, "预下单不能加积分");
-
-    let (status, pending) = call(
-        &app,
-        "GET",
-        &format!("/api/v1/credits/orders/{order_id}"),
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{pending}");
-    assert_eq!(pending["status"], "created");
-    assert_eq!(pending["balance"], 0);
+    for pack in ["small", "popular", "large"] {
+        let (status, denied) = call(
+            &app,
+            "POST",
+            "/api/v1/credits/orders",
+            Some(&token),
+            Some(json!({ "pack_code": pack })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{pack} {denied}");
+        let message = denied["message"].as_str().unwrap_or("");
+        assert!(message.contains("虚拟支付"), "{message}");
+        assert!(denied.get("pay_params").is_none() || denied["pay_params"].is_null());
+        assert!(denied.get("virtual_payment").is_none() || denied["virtual_payment"].is_null());
+    }
+    assert!(!*hit.lock().unwrap(), "充值不能请求商户 JSAPI 预下单");
+    assert_eq!(balance(&app, &token).await, 0);
 
     let (status, mock) = call(
         &app,
         "POST",
-        &format!("/api/v1/credits/orders/{order_id}/mock-callback"),
+        &format!("/api/v1/credits/orders/{}/mock-callback", Uuid::new_v4()),
         Some(&token),
         None,
     )
@@ -433,17 +338,8 @@ async fn jsapi_credits_once_and_rejects_bad_or_unpaid() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{mock}");
     assert_eq!(balance(&app, &token).await, 0);
 
-    let (body, ts, nonce, sig) = signed_notify(
-        &json!({"event_type": "ignored"}),
-        "REFUND.SUCCESS",
-        "refundnonce1",
-    );
-    let (status, ignored) = post_notify(&app, &body, &ts, &nonce, &sig).await;
-    assert_eq!(status, StatusCode::OK, "{ignored}");
-    assert_eq!(balance(&app, &token).await, 0, "非支付成功通知不能加积分");
-
-    let (body, ts, nonce, sig) = signed_notify(
-        &trade(&out_trade_no, &openid, 600, "4200000000000000000000099"),
+    let (body, ts, nonce, _sig) = signed_notify(
+        &trade(&code, &code, 600, "4200000000000000000000099"),
         "TRANSACTION.SUCCESS",
         "badsignonce1",
     );
@@ -458,97 +354,17 @@ async fn jsapi_credits_once_and_rejects_bad_or_unpaid() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{rejected}");
     assert_eq!(rejected["code"], "FAIL");
     assert_eq!(balance(&app, &token).await, 0, "坏签名不能加积分");
-    let _ = (body, sig);
 
     let (body, ts, nonce, sig) = signed_notify(
-        &trade(&out_trade_no, &openid, 1, "4200000000000000000000001"),
+        &trade(&code, &code, 600, "4200000000000000000000001"),
         "TRANSACTION.SUCCESS",
-        "amountonce01",
+        "missingordr1",
     );
-    let (status, mismatch) = post_notify(&app, &body, &ts, &nonce, &sig).await;
-    assert_ne!(status, StatusCode::OK, "{mismatch}");
-    assert_eq!(balance(&app, &token).await, 0, "金额不一致不能加积分");
-    let (status, still) = call(
-        &app,
-        "GET",
-        &format!("/api/v1/credits/orders/{order_id}"),
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(still["status"], "created", "{status} {still}");
-
-    let (body, ts, nonce, sig) = signed_notify(
-        &trade(
-            &out_trade_no,
-            "someone-else",
-            600,
-            "4200000000000000000000002",
-        ),
-        "TRANSACTION.SUCCESS",
-        "openidnonce1",
+    let (status, missing) = post_notify(&app, &body, &ts, &nonce, &sig).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(
+        balance(&app, &token).await,
+        0,
+        "没有 JSAPI 订单时通知不能加积分"
     );
-    let (status, wrong_user) = post_notify(&app, &body, &ts, &nonce, &sig).await;
-    assert_ne!(status, StatusCode::OK, "{wrong_user}");
-    assert_eq!(balance(&app, &token).await, 0, "openid 不一致不能加积分");
-
-    let (unpaid_status, unpaid) = call(
-        &app,
-        "POST",
-        "/api/v1/credits/orders",
-        Some(&token),
-        Some(json!({ "pack_code": "popular" })),
-    )
-    .await;
-    assert_eq!(unpaid_status, StatusCode::OK, "{unpaid}");
-    assert_eq!(balance(&app, &token).await, 0, "未支付的第二单不能加积分");
-
-    let transaction_id = format!("42{}", &Uuid::new_v4().simple().to_string()[..18]);
-    let (body, ts, nonce, sig) = signed_notify(
-        &trade(&out_trade_no, &openid, 600, &transaction_id),
-        "TRANSACTION.SUCCESS",
-        "successnonce",
-    );
-    let (status, paid) = post_notify(&app, &body, &ts, &nonce, &sig).await;
-    assert_eq!(status, StatusCode::OK, "{paid}");
-    assert_eq!(paid["code"], "SUCCESS");
-    assert_eq!(balance(&app, &token).await, 10);
-
-    let (status, again) = post_notify(&app, &body, &ts, &nonce, &sig).await;
-    assert_eq!(status, StatusCode::OK, "{again}");
-    assert_eq!(balance(&app, &token).await, 10, "重复通知不能再加积分");
-
-    let (left, right) = tokio::join!(
-        post_notify(&app, &body, &ts, &nonce, &sig),
-        post_notify(&app, &body, &ts, &nonce, &sig),
-    );
-    assert!(
-        left.0.is_success() || right.0.is_success(),
-        "{left:?} {right:?}"
-    );
-    assert_eq!(balance(&app, &token).await, 10);
-
-    let (status, ledger) = call(&app, "GET", "/api/v1/credits/ledger", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "{ledger}");
-    let recharges: Vec<_> = ledger["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|item| item["reason"] == "recharge")
-        .collect();
-    assert_eq!(recharges.len(), 1);
-    assert_eq!(recharges[0]["delta"], 10);
-
-    let (status, done) = call(
-        &app,
-        "GET",
-        &format!("/api/v1/credits/orders/{order_id}"),
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{done}");
-    assert_eq!(done["status"], "paid");
-    assert_eq!(done["balance"], 10);
-    assert_eq!(unpaid["status"], "created");
 }

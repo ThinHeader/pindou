@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
-import { creditsApi, errorOf, requestVirtualPayment, requestWxPayment, virtualPayUnavailable } from '../../api/http'
+import { creditsApi, errorOf, requestVirtualPayment, virtualPayUnavailable } from '../../api/http'
 import { playRewardedVideo } from '../../utils/reward-ad'
 import type { CreditOrder, CreditPack, LedgerItem } from '../../api/types'
 import { useCreditsStore } from '../../stores/credits'
@@ -21,22 +21,16 @@ const fallback: CreditPack[] = [
   { code: 'large', name: '大包', credits: 60, price_cents: 3000, price_label: '¥30', blurb: '多送 10', popular: false },
 ]
 
-const payMode = ref<'mock' | 'wechat' | 'virtual' | 'misconfigured' | 'unknown'>('unknown')
+const payMode = ref<'virtual' | 'unavailable'>('unavailable')
 
 async function load() {
   try {
     const data = await creditsApi.packs()
     packs.value = data.items
-    if (
-      data.pay_mode === 'mock' ||
-      data.pay_mode === 'wechat' ||
-      data.pay_mode === 'virtual' ||
-      data.pay_mode === 'misconfigured'
-    ) {
-      payMode.value = data.pay_mode
-    }
+    payMode.value = data.pay_mode === 'virtual' ? 'virtual' : 'unavailable'
   } catch {
     packs.value = fallback
+    payMode.value = 'unavailable'
   }
   if (!user.isLoggedIn) return
   await credits.refresh()
@@ -145,81 +139,42 @@ async function pollOrder(orderId: string): Promise<CreditOrder> {
 
 async function buy(pack: CreditPack) {
   if (!ensureLogin() || paying.value) return
-  if (payMode.value === 'misconfigured') {
-    tell('支付暂不可用')
+  if (payMode.value !== 'virtual') {
+    tell('当前仅支持小程序虚拟支付')
     return
   }
   paying.value = true
   try {
     const order = await creditsApi.createOrder(pack.code)
-    if (order.mock) {
-      const ok = await askPay(
-        '开发示意充值',
-        `${pack.price_label} · ${pack.credits} 积分\n当前未配置支付，确认后直接到账，不会产生真实扣款。`,
-        '确认到账',
-      )
-      if (!ok) return
-      const paid = await creditsApi.mockPay(order.order_id)
-      credits.balance = paid.balance
-      tell(paid.delta > 0 ? `到账 ${paid.delta} 积分` : '订单已支付')
-      await load()
+    if (!order.virtual_payment) {
+      tell('当前仅支持小程序虚拟支付')
       return
     }
-
-    if (order.virtual_payment) {
-      const blocked = virtualPayUnavailable(order.virtual_payment.signData)
-      if (blocked) {
-        tell(blocked)
-        return
-      }
-      const ok = await askPay(
-        '微信支付',
-        `支付 ${pack.price_label}，到账 ${pack.credits} 积分。取消或失败不会加积分。`,
-        '去支付',
-      )
-      if (!ok) return
-      try {
-        await requestVirtualPayment(order.virtual_payment)
-      } catch (e) {
-        const code = payErrCode(e)
-        if (code === -15005 || code === -15007) {
-          try {
-            await user.login()
-            tell('登录已刷新，请再试一次')
-          } catch {
-            tell('登录已过期，请重新登录后再支付')
-          }
-          return
-        }
-        tell(virtualFailText(e))
-        return
-      }
-      const result = await pollOrder(order.order_id)
-      if (result.balance != null) credits.balance = result.balance
-      if (result.status === 'paid') {
-        tell('支付成功，积分已到账')
-      } else {
-        tell('支付已提交，到账可能稍有延迟，请稍后下拉刷新')
-      }
-      await load()
-      return
-    }
-
-    if (!order.pay_params) {
-      tell('支付参数缺失，请稍后重试')
+    const blocked = virtualPayUnavailable(order.virtual_payment.signData)
+    if (blocked) {
+      tell(blocked)
       return
     }
     const ok = await askPay(
-      '微信支付',
+      '确认支付',
       `支付 ${pack.price_label}，到账 ${pack.credits} 积分。取消或失败不会加积分。`,
       '去支付',
     )
     if (!ok) return
     try {
-      await requestWxPayment(order.pay_params)
+      await requestVirtualPayment(order.virtual_payment)
     } catch (e) {
-      const msg = payErrText(e).toLowerCase()
-      tell(msg.includes('cancel') || msg.includes('取消') ? '已取消支付' : '支付未完成，积分不会到账')
+      const code = payErrCode(e)
+      if (code === -15005 || code === -15007) {
+        try {
+          await user.login()
+          tell('登录已刷新，请再试一次')
+        } catch {
+          tell('登录已过期，请重新登录后再支付')
+        }
+        return
+      }
+      tell(virtualFailText(e))
       return
     }
     const result = await pollOrder(order.order_id)
@@ -273,8 +228,7 @@ async function buy(pack: CreditPack) {
 
     <view class="sec-title">
       <text>充值档位</text>
-      <text v-if="payMode === 'misconfigured'" class="tag">暂不可用</text>
-      <text v-else-if="payMode === 'mock'" class="tag">开发示意</text>
+      <text v-if="payMode !== 'virtual'" class="tag">暂不可用</text>
     </view>
     <view class="tiers">
       <view
@@ -290,13 +244,11 @@ async function buy(pack: CreditPack) {
         <text class="blurb">{{ pack.blurb }}</text>
       </view>
     </view>
-    <text v-if="payMode === 'mock'" class="legal">积分仅用于出稿，不退不提现。当前是开发示意充值，不会产生真实扣款。</text>
-    <text v-else-if="payMode === 'misconfigured'" class="legal">支付配置不完整，暂不能充值。</text>
-    <text v-else-if="payMode === 'virtual'" class="legal">积分仅用于出稿，不退不提现。支付成功后到账。</text>
-    <text v-else class="legal">积分仅用于出稿，不退不提现。支付由微信支付完成，成功后到账。</text>
+    <text v-if="payMode === 'virtual'" class="legal">积分仅用于出稿，不退不提现。支付成功后到账。</text>
+    <text v-else class="legal">当前仅支持小程序虚拟支付，暂不能充值。</text>
 
     <view class="sec-title"><text>积分明细</text></view>
-    <view v-if="!user.isLoggedIn" class="empty">登录后查看明细</view>
+    <view v-if="!user.isLoggedIn" class="empty" @click="ensureLogin()">登录后查看明细</view>
     <view v-else-if="ledger.length" class="ledger">
       <view v-for="item in ledger" :key="item.id" class="row">
         <view>

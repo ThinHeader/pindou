@@ -23,7 +23,7 @@ docs/api.md                 # 接口说明
 |------|------|
 | 成功出稿 | −1（整条 MVP+：Seedream 出稿 + 拼豆，只扣一次；失败或取消不扣，也不退款） |
 | 激励广告 | +1（东八区每天一次，看完 `uni.createRewardedVideoAd` 后才入账；`daily_claims` 幂等） |
-| 充值 | 10 / ¥6，35 / ¥18，60 / ¥30。虚拟支付、商户 JSAPI、开发示意三者择一，都只入账一次 |
+| 充值 | 10 / ¥6，35 / ¥18，60 / ¥30。小程序只走虚拟支付；未配虚拟支付时接口可开发示意，都只入账一次 |
 
 没有每日免费领取。广告位 ID 配在小程序 `VITE_REWARD_AD_UNIT_ID`（见 `apps/mini/.env.example`），留空时不会发积分。
 
@@ -62,18 +62,17 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/wx-login \
 
 微信真登录：在 `.env` 填 `WX_APPID` 和 `WX_SECRET`。留空则走开发态，同一 `code` 对应同一用户，不会请求微信。支付要用这个登录拿到的 `openid`。虚拟支付还要服务端保存的 `session_key`，所以必须先走一次微信登录；`session_key` 只以密文落库，不会返回给小程序。
 
-## 虚拟支付（积分充值，优先）
+## 虚拟支付（积分充值）
 
-个人主体小程序如果不能走商户号 JSAPI，可以用小程序虚拟支付（米大师道具直购）。配置了 `WX_VIRTUAL_OFFER_ID` 和对应环境的 AppKey 之后，`POST /api/v1/credits/orders` 返回 `virtual_payment`，小程序调用 `wx.requestVirtualPayment`。商户 JSAPI 代码仍保留：虚拟支付未配置时，行为与以前相同。
+积分是虚拟商品。小程序充值只调用 `wx.requestVirtualPayment`（`short_series_goods`），包括 iOS。配置了 `WX_VIRTUAL_OFFER_ID` 和对应环境的 AppKey 之后，`POST /api/v1/credits/orders` 返回 `virtual_payment`。小程序不再调用商户 `requestPayment`，也不调用开发示意到账。
 
 `GET /api/v1/credits/packs` 的 `pay_mode`：
 
 | 值 | 含义 |
 |----|------|
-| `virtual` | 虚拟支付已启用 |
-| `wechat` | 未启用虚拟支付，商户 JSAPI 已启用 |
-| `mock` | 两者都没配。开发示意到账 |
-| `misconfigured` | 虚拟支付或商户参数只写了一部分。示意到账关闭，下单 503 |
+| `virtual` | 虚拟支付已启用。这是小程序会拉起的唯一支付 |
+| `mock` | 虚拟支付没配，商户参数也都空着。接口可以 `mock-callback`，小程序不会调用 |
+| `misconfigured` | 虚拟支付只写了一部分，或只配了商户 JSAPI。下单 503，不加积分 |
 
 环境：
 
@@ -95,27 +94,15 @@ MP 后台（拼豆手账工坊，AppID `wx809eec952c85b197`）：
 
 变量名见 `apps/api/.env.example`。不要提交 AppKey 或退款口令。
 
-## 微信支付（积分充值）
+## 开发示意与历史商户单
 
-档位仍是小包 10 积分 / ¥6、推荐 35 / ¥18、大包 60 / ¥30。积分只加在原有 `credit_accounts` 上，没有第二套钱包。
+档位仍是小包 10 积分 / ¥6、推荐 35 / ¥18、大包 60 / ¥30。积分只加在原有 `credit_accounts` 上。
 
-**开发示意（默认）**：`WECHAT_MCH_ID`、私钥、证书序列号、APIv3 密钥、回调地址、微信支付公钥这些商户参数全部留空。`GET /api/v1/credits/packs` 的 `pay_mode` 为 `mock`。小程序会写明「开发示意充值」，确认后调用 `POST /api/v1/credits/orders/{id}/mock-callback`，同一订单只加一次积分，不会请求微信。
+虚拟支付和商户参数都留空时，`pay_mode` 为 `mock`。`POST /api/v1/credits/orders/{id}/mock-callback` 只给本地接口测试，同一订单只加一次积分。小程序没有这个入口。
 
-**正式支付**：上述参数配齐后，下单调用微信 API v3 `POST /v3/pay/transactions/jsapi`，把 `timeStamp` / `nonceStr` / `package` / `signType=RSA` / `paySign` 交给小程序 `uni.requestPayment`。用户取消或失败不加积分。微信把支付结果 POST 到 `WECHAT_PAY_NOTIFY_URL`（默认 `{PUBLIC_BASE_URL}/api/v1/pay/wechat/notify`）。服务校验平台签名、用 APIv3 密钥解密，核对金额、商户号、AppID 和付款人 `openid`，在同一事务里把订单从 `created` 改成 `paid` 并写一条 `recharge` 流水。`credit_orders.transaction_id` 和 `credit_ledger (reason, ref_id)` 有唯一约束，重复通知不会再加积分。客户端支付成功后会轮询 `GET /api/v1/credits/orders/{id}`；若回调稍慢，连的是官方微信域名时还会向微信查单并补入账。
+只填写商户 JSAPI 参数、没有配齐虚拟支付时，下单返回 503，不会向微信预下单，也不会加积分。客诉退款仍只走虚拟支付的运维接口，不进小程序。
 
-只要填写了任意一项商户参数，示意回调就会拒绝，避免生产环境被假支付刷积分。参数不完整时下单返回 503，同样不加积分。
-
-商户平台：
-
-1. 小程序完成微信认证。登录用的 `WX_APPID` 和支付 AppID 是同一个。
-2. 注册微信支付商户号，开通 **JSAPI 支付**。小程序支付走 JSAPI 下单，再由 `wx.requestPayment` 拉起。
-3. **关联小程序**：商户平台 → 产品中心 → AppID 账号管理 → 关联小程序 AppID。
-4. **JSAPI 支付授权目录**：这是公众号 / H5 网页支付要填的目录。小程序支付不使用 H5 授权目录，也不要填小程序页面路径。确认 JSAPI 产品已开通、AppID 已关联即可。如果开通页把授权目录标成必填，按商户平台当时的说明填写，它只对 H5 生效。
-5. 账户中心 → API 安全：申请商户 API 证书（`apiclient_key.pem` + 证书序列号），设置 32 位 APIv3 密钥。推荐再申请「微信支付公钥」，把公钥 PEM 和公钥 ID 配进环境变量。不配公钥时，服务会请求 `/v3/certificates`，用 APIv3 密钥解密平台证书并缓存。
-6. **支付回调 URL**：`https://你的域名/api/v1/pay/wechat/notify`。APIv3 把地址放在下单参数 `notify_url` 里，一般不用在商户平台另备案。必须是公网 HTTPS、不能带 query，微信服务器要能访问。`PUBLIC_BASE_URL` 指到这个域名，或单独设置 `WECHAT_PAY_NOTIFY_URL`。本地 http 不行，需要内网穿透。
-7. 小程序后台把 API 域名加进 request 合法域名。`requestPayment` 由微信客户端发起，不走业务 request 域名。
-
-变量说明见 `apps/api/.env.example`。不要提交私钥和 APIv3 密钥。
+已经落库的商户 JSAPI 订单仍可由 `POST /api/v1/pay/wechat/notify` 验签入账。新的充值不会再创建这种订单。
 
 MVP+ 出稿默认「上传 → 火山方舟 Seedream 5.0 Flash 图生图 → 自研最近邻拼豆」。方舟密钥见下方。没配密钥时走开发模拟，仍然会产出透明底平涂中间图和真实色号稿，方便本地和 CI，也不会访问网络。
 
@@ -155,7 +142,7 @@ cd apps/api
 cargo test
 ```
 
-覆盖：开发态登录、激励广告每日一次、每日免费领取接口已移除、坏图不扣分、MVP+ 模拟管线（Seedream 风格的透明平涂中间图 / 最近邻色号，成功才扣 1 分）、52 / 78 / 104 都按所选珠板出格、没配方舟密钥时 `seedream` / `ark` / `aliyun` 返回 400 且不扣分、改名删除、作品发布与广场互动返回 410、开发示意充值只入账一次、微信支付验签回调幂等、虚拟支付签名与查单入账、客诉退款口令与扣回积分、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数、虚拟支付参数、方舟密钥和钉钉机器人配置，避免测试打到真微信、真方舟或生产告警群。支付用例使用本机假微信和测试密钥。
+覆盖：开发态登录、激励广告每日一次、每日免费领取接口已移除、坏图不扣分、MVP+ 模拟管线（Seedream 风格的透明平涂中间图 / 最近邻色号，成功才扣 1 分）、52 / 78 / 104 都按所选珠板出格、没配方舟密钥时 `seedream` / `ark` / `aliyun` 返回 400 且不扣分、改名删除、作品发布与广场互动返回 410、开发示意充值只入账一次、商户 JSAPI 不再创建充值单、虚拟支付签名与查单入账、客诉退款口令与扣回积分、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数、虚拟支付参数、方舟密钥和钉钉机器人配置，避免测试打到真微信、真方舟或生产告警群。支付用例使用本机假微信和测试密钥。
 
 ## 4. 小程序
 

@@ -2,11 +2,12 @@
 import { useCreditsStore } from '../stores/credits'
 import { errorOf } from '../api/http'
 import { playRewardedVideo } from '../utils/reward-ad'
-import { showError, showTip } from '../utils/ui'
+import { ensureLogin, showError, showTip } from '../utils/ui'
 
 const credits = useCreditsStore()
 
 async function watchAd() {
+  if (!ensureLogin()) return
   if (credits.adClaimed) {
     showTip('今日已领取广告奖励')
     return
@@ -26,6 +27,7 @@ async function watchAd() {
   }
 }
 function goRecharge() {
+  if (!ensureLogin()) return
   credits.closeEmptySheet()
   uni.navigateTo({ url: '/pages/credits/index' })
 }

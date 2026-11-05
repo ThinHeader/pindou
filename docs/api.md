@@ -78,7 +78,7 @@ Base URL（本地）：`http://127.0.0.1:3000`
 |------|------|
 | 成功出稿 | −1 |
 | 激励广告 | +1，东八区每个自然日一次 |
-| 充值 | 见档位。开发示意、虚拟支付或微信支付，都只入账一次 |
+| 充值 | 见档位。小程序只走虚拟支付。开发示意只留给未配置时的接口测试。都只入账一次 |
 | 客诉退款 | 虚拟支付整单退款成功后扣回该档积分（见下文，不对用户开放） |
 
 每日免费领取已停用，`POST /api/v1/credits/daily-claim` 不存在。激励广告在同一事务里向 `daily_claims` 插入 `(user_id, 东八区今日日期)`；主键冲突则返回 409 `already_claimed`，成功则给账户 +1 并写入 `credit_ledger`（`reason=ad_reward`）。不依赖 Redis。历史流水里的 `daily_claim` 仍显示为「每日领取」。
@@ -120,10 +120,9 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 | 值 | 含义 |
 |----|------|
-| `virtual` | 已启用虚拟支付。下单返回 `virtual_payment`，优先于 JSAPI |
-| `mock` | 未配置虚拟支付，也未配置任何微信支付商户参数。可以走示意回调 |
-| `wechat` | 未启用虚拟支付，已启用 JSAPI。下单返回调起支付参数 |
-| `misconfigured` | 虚拟支付或商户参数只写了一部分。示意到账关闭，下单 503 |
+| `virtual` | 已启用虚拟支付。下单返回 `virtual_payment`。这是小程序会拉起的唯一支付 |
+| `mock` | 未配置虚拟支付，也未配置任何微信支付商户参数。接口可以走示意回调，小程序不会调用 |
+| `misconfigured` | 虚拟支付只写了一部分，或只配了商户 JSAPI。示意到账关闭，下单 503。不再返回 `pay_mode=wechat` |
 
 ### `POST /api/v1/credits/orders`
 
@@ -151,32 +150,13 @@ Base URL（本地）：`http://127.0.0.1:3000`
 
 `paySig` 是 AppKey 对 `requestVirtualPayment&` + `signData` 的 HMAC-SHA256，十六进制。`signature` 是该用户 `session_key` 对同一段 `signData` 的 HMAC-SHA256。响应里没有 AppKey，也没有 `session_key`。没有 `session_key` 时下单返回 401，需要重新微信登录。
 
-道具 ID 默认等于档位 `small` / `popular` / `large`，`goodsPrice` 分别是 600 / 1800 / 3000。MP 道具价格必须一致。
+道具 ID 默认等于档位 `small` / `popular` / `large`，`goodsPrice` 分别是 600 / 1800 / 3000。界面积分是 10 / 35 / 60，价格是 ¥6 / ¥18 / ¥30。MP 道具价格必须一致。
 
-微信支付时 `mock: false`，并带上小程序 `wx.requestPayment` 参数：
-
-```json
-{
-  "order_id": "uuid",
-  "out_trade_no": "32 位商户单号",
-  "amount_fen": 600,
-  "status": "created",
-  "mock": false,
-  "pay_params": {
-    "timeStamp": "1710000000",
-    "nonceStr": "...",
-    "package": "prepay_id=wx...",
-    "signType": "RSA",
-    "paySign": "..."
-  }
-}
-```
-
-`paySign` 是商户私钥对 `appId\n时间戳\n随机串\nprepay_id=...\n` 的 SHA256withRSA。付款人 `openid` 来自登录用户，不由客户端上传。
+新订单不返回商户 `pay_params`，也不再创建 JSAPI 单。只配了商户号时下单 503。
 
 ### `GET /api/v1/credits/orders/{id}`
 
-订单所属用户查询状态。`paid` 之前不加积分。JSAPI 且 API 指向 `api.mch.weixin.qq.com` 时，若本地仍是 `created`，会向微信查单；查单响应验签通过且交易成功才补入账。虚拟支付订单同样会查 `/xpay/query_order`，已支付才补入账，并通知微信已发货。响应带当前 `balance`，方便支付后轮询。
+订单所属用户查询状态。`paid` 之前不加积分。虚拟支付订单会查 `/xpay/query_order`，已支付才补入账，并通知微信已发货。历史上已经生成的商户 JSAPI 单，在 API 指向 `api.mch.weixin.qq.com` 且本地仍是 `created` 时，仍会查单补入账。响应带当前 `balance`，方便支付后轮询。
 
 ### `POST /api/v1/credits/orders/{id}/mock-callback`
 
@@ -223,7 +203,7 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
 
 ### `POST /api/v1/pay/wechat/notify`
 
-微信支付结果通知，无登录态。用 `Wechatpay-Timestamp` / `Nonce` / `Signature` / `Serial` 验签（5 分钟时间窗），再用 APIv3 密钥做 AES-256-GCM 解密。
+历史商户 JSAPI 订单的结果通知，无登录态。新的积分充值不会创建这种订单，小程序也不会调起商户支付。用 `Wechatpay-Timestamp` / `Nonce` / `Signature` / `Serial` 验签（5 分钟时间窗），再用 APIv3 密钥做 AES-256-GCM 解密。
 
 - 签名无效：401，不加积分。
 - 金额、AppID、商户号或 `openid` 与订单不一致：4xx/5xx，不加积分，订单保持 `created`。

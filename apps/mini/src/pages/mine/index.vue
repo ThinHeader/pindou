@@ -3,7 +3,7 @@ import { onShow } from '@dcloudio/uni-app'
 import { useCreditsStore } from '../../stores/credits'
 import { useLibraryStore } from '../../stores/library'
 import { useUserStore } from '../../stores/user'
-import { initialOf, showError, showTip } from '../../utils/ui'
+import { ensureLogin, initialOf, showError, showTip } from '../../utils/ui'
 
 const user = useUserStore()
 const credits = useCreditsStore()
@@ -24,6 +24,7 @@ function goLogin() {
   uni.navigateTo({ url: '/pages/login/index' })
 }
 function goCredits() {
+  if (!ensureLogin()) return
   uni.navigateTo({ url: '/pages/credits/index' })
 }
 function goLibrary(tab: string) {

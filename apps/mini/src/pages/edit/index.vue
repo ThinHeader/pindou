@@ -56,6 +56,11 @@ onShow(() => {
   load()
 })
 
+function search() {
+  if (!ensureLogin()) return
+  load()
+}
+
 function pick(id: string) {
   if (!ensureLogin()) return
   tab.value = id
@@ -89,7 +94,7 @@ function goLibrary() {
         class="input"
         placeholder="搜索稿件名"
         confirm-type="search"
-        @confirm="load"
+        @confirm="search"
       />
     </view>
     <view class="pills">

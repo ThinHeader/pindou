@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useCreditsStore } from '../stores/credits'
+import { ensureLogin } from '../utils/ui'
 
 defineProps<{ compact?: boolean }>()
 const credits = useCreditsStore()
 
 function goCredits() {
+  if (!ensureLogin()) return
   uni.navigateTo({ url: '/pages/credits/index' })
 }
 </script>

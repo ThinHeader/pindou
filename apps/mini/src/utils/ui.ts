@@ -68,6 +68,7 @@ export function checkedDraftTitle(raw: string): string | null {
 
 export function ensureLogin(): boolean {
   const user = useUserStore()
+  if (!user.token) user.hydrate()
   if (user.isLoggedIn) return true
   uni.navigateTo({ url: '/pages/login/index' })
   return false

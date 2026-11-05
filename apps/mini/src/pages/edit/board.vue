@@ -20,7 +20,7 @@ import {
   paintIndex,
   recount,
 } from '../../utils/pattern'
-import { askText, checkedDraftTitle, showError, showTip } from '../../utils/ui'
+import { askText, checkedDraftTitle, ensureLogin, showError, showTip } from '../../utils/ui'
 
 type Tool = 'pencil' | 'eraser' | 'picker' | 'fill' | 'pan'
 type Spot = { x: number; y: number }
@@ -160,6 +160,12 @@ function goPick() {
 }
 
 async function boot(id: string) {
+  if (!ensureLogin()) {
+    requestedId = id || requestedId || 'pending-login'
+    loading.value = false
+    showIdle('登录后才能改稿', '请先登录，再选择自己的稿。', false)
+    return
+  }
   requestedId = id
   if (!id) {
     loading.value = false
@@ -510,7 +516,7 @@ function fillFrom(x: number, y: number) {
 }
 
 async function save(saveAs: boolean) {
-  if (saving.value || !draftId) return
+  if (!ensureLogin() || saving.value || !draftId) return
   if (!saveAs && !unsaved.value) {
     showTip('没有需要保存的改动')
     return

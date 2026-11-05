@@ -7,7 +7,7 @@ import type { JobStage, JobView } from '../../api/types'
 import { useCreateStore } from '../../stores/create'
 import { useCreditsStore } from '../../stores/credits'
 import { isContentPolicy, jobFailureCopy, jobFailureNote } from '../../utils/job-error'
-import { showTip } from '../../utils/ui'
+import { ensureLogin, showTip } from '../../utils/ui'
 
 const create = useCreateStore()
 const credits = useCreditsStore()
@@ -69,6 +69,11 @@ function sleep(ms: number) {
 }
 
 async function start() {
+  if (!ensureLogin()) {
+    terminal = true
+    localError.value = '请先登录后再出稿'
+    return
+  }
   if (started.value && !failed.value) return
   started.value = true
   localError.value = ''

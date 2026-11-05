@@ -5,7 +5,6 @@ import type {
   CreditOrder,
   CreditPack,
   VirtualPayParams,
-  WxPayParams,
   CreditsMe,
   CreditsMutation,
   DraftDetail,
@@ -200,10 +199,6 @@ export const creditsApi = {
   createOrder: (packCode: string) =>
     http.post<CreditOrder>('/api/v1/credits/orders', { pack_code: packCode }),
   getOrder: (orderId: string) => http.get<CreditOrder>(`/api/v1/credits/orders/${orderId}`),
-  mockPay: (orderId: string) =>
-    http.post<{ order: CreditOrder; balance: number; delta: number }>(
-      `/api/v1/credits/orders/${orderId}/mock-callback`,
-    ),
 }
 
 interface WxMini {
@@ -274,22 +269,6 @@ export function requestVirtualPayment(params: VirtualPayParams): Promise<void> {
       paySig: params.paySig,
       signature: params.signature,
       mode: params.mode || 'short_series_goods',
-      success: () => resolve(),
-      fail: (err) => reject(err),
-    })
-  })
-}
-
-export function requestWxPayment(params: WxPayParams): Promise<void> {
-  return new Promise((resolve, reject) => {
-    uni.requestPayment({
-      provider: 'wxpay',
-      orderInfo: params.package,
-      timeStamp: params.timeStamp,
-      nonceStr: params.nonceStr,
-      package: params.package,
-      signType: params.signType,
-      paySign: params.paySign,
       success: () => resolve(),
       fail: (err) => reject(err),
     })

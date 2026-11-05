@@ -42,6 +42,11 @@ onShow(() => {
   load()
 })
 
+function search() {
+  if (!ensureLogin()) return
+  load()
+}
+
 function pick(id: string) {
   if (!ensureLogin()) return
   library.open(id)
@@ -52,6 +57,7 @@ function openDraft(id: string) {
 }
 
 function manage(item: DraftCard) {
+  if (!ensureLogin()) return
   uni.showActionSheet({
     itemList: ['改名', '删除'],
     success: (res) => {
@@ -62,6 +68,7 @@ function manage(item: DraftCard) {
 }
 
 async function renameItem(item: DraftCard) {
+  if (!ensureLogin()) return
   const current = item.title === '未命名草稿' ? '' : item.title
   const typed = await askText('修改稿件名称', current, '例如：窗边的猫')
   if (typed === null) return
@@ -77,6 +84,7 @@ async function renameItem(item: DraftCard) {
 }
 
 async function removeItem(item: DraftCard) {
+  if (!ensureLogin()) return
   const ok = await askConfirm(
     '删除稿件',
     `删除后无法恢复。确定删除「${item.title}」吗？`,
@@ -96,7 +104,7 @@ async function removeItem(item: DraftCard) {
   <view class="page">
     <view class="search">
       <text>⌕</text>
-      <input v-model="keyword" class="input" placeholder="搜索稿件名" confirm-type="search" @confirm="load" />
+      <input v-model="keyword" class="input" placeholder="搜索稿件名" confirm-type="search" @confirm="search" />
     </view>
     <view class="pills">
       <view
