@@ -280,7 +280,7 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
 - `palette_brand`：`generic` 通用拼豆 / `mard` / `perler` / `shop` 店内色卡。都是内置 SKU 的子集，不是厂商目录抓取。
 - `remove_bg`、`cartoon_strength` 若仍被旧客户端带上，会被忽略，不再 400，也不再分出去背或卡通步骤。
 - `image_ref`：`builtin:cat|bear|chick|bunny` 用内置示例图。
-- `title`：可选，1–40 字，首尾空格会去掉。不传或只传空白时：示例图用「小橘猫吐舌 / 黄油小熊 / 柠檬汽水 / 蜜桃兔耳」，其他图用「未命名草稿」。超过 40 字返回 400，且不建任务、不扣积分。
+- `title`：可选，1–40 字，首尾空格会去掉。不传或只传空白时：示例图默认名是「小橘猫吐舌」（`builtin:cat`）、「黄油小熊」（`builtin:bear`）、「柠檬汽水」（`builtin:chick`）、「蜜桃兔耳」（`builtin:bunny`），其他图用「未命名草稿」。这些名字只出现在用户自己的出稿上，启动时不会落成官方稿。超过 40 字返回 400，且不建任务、不扣积分。
 - 没图：400「请先选择图片」。坏图：400「无法解析图片，请上传 JPG 或 PNG」。过大：400「图片过大…」。余额不足 402。这些都发生在扣分之前。
 - 没配 `ARK_API_KEY` 且 `PIPELINE_PROVIDER=auto`（或显式 `mock`）时 `provider` 为 `mock`：本地做出透明平涂 PNG，再用最近邻得到真实色号稿，不请求方舟。
 - `PIPELINE_PROVIDER=seedream` 或 `ark` 但 `ARK_API_KEY` 为空：400「出稿服务未就绪。本次未扣积分。」，不建任务，不扣积分。上游报错也不会把原文回给小程序。
@@ -380,4 +380,4 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
 - `GET /api/v1/plaza/works/{id}/comments`
 - `POST /api/v1/plaza/works/{id}/comments`
 
-启动时如果库里还没有官方模板，会写入「小橘猫吐舌 / 黄油小熊 / 柠檬汽水 / 蜜桃兔耳」，只出现在稿件库，不再写入作品或评论。
+启动时不会写入官方预置稿，也不会写入作品或评论。「小橘猫吐舌」「黄油小熊」「柠檬汽水」「蜜桃兔耳」只作为上传示例图的默认标题。稿件库「官方」分类只返回库里仍标记为 `is_official` 的稿，新环境为空。教程是小程序内置只读内容，不读这些稿件。

@@ -617,16 +617,28 @@ async fn draft_title_rename_and_delete() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{official}");
-    let official_id = official["items"][0]["id"].as_str().unwrap();
-    let (status, official_del) = call(
-        &app,
-        "DELETE",
-        &format!("/api/v1/drafts/{official_id}"),
-        Some(token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{official_del}");
+    // 启动不再写入「黄油小熊 / 小橘猫吐舌 / 蜜桃兔耳 / 柠檬汽水」，列表可以为空。
+    // 库里若还有历史官方稿，删除仍应被拒绝。
+    let official_items = official["items"].as_array().expect("official items");
+    for item in official_items {
+        let official_id = item["id"].as_str().unwrap();
+        let (status, official_del) = call(
+            &app,
+            "DELETE",
+            &format!("/api/v1/drafts/{official_id}"),
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{official_del}");
+        assert!(
+            official_del["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("官方模板"),
+            "{official_del}"
+        );
+    }
 
     let (status, closed) = call(
         &app,
@@ -714,8 +726,27 @@ async fn draft_title_rename_and_delete() {
     )
     .await;
     assert_eq!(builtin["draft"]["title"], "小橘猫吐舌");
+    assert_eq!(builtin["draft"]["is_official"], false);
+    assert_eq!(builtin["draft"]["badge"], "我的");
     assert_eq!(builtin["balance"], 7);
     let builtin_id = builtin["draft"]["id"].as_str().unwrap();
+    let (status, official_after) = call(
+        &app,
+        "GET",
+        "/api/v1/drafts?tab=official",
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{official_after}");
+    assert!(
+        official_after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["id"] != builtin_id),
+        "示例图默认名不应变成官方稿：{official_after}"
+    );
     let (status, only_draft) = call(
         &app,
         "DELETE",

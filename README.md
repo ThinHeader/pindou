@@ -49,7 +49,7 @@ cp .env.example .env    # 按需改，不要提交 .env
 cargo run
 ```
 
-进程启动时会执行 `migrations/` 并写入官方模板。默认听 `http://127.0.0.1:3000`。对象文件落在 `apps/api/data/objects`（已 gitignore）。
+进程启动时会执行 `migrations/`，不会写入官方预置稿。默认听 `http://127.0.0.1:3000`。对象文件落在 `apps/api/data/objects`（已 gitignore）。
 
 ```bash
 curl http://127.0.0.1:3000/health
