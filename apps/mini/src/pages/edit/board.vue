@@ -5,7 +5,7 @@ import { draftsApi } from '../../api/http'
 import { readableError } from '../../api/payload'
 import type { PaletteColor } from '../../api/types'
 import { paintBoard, codeVisible, type PaintCtx } from '../../utils/board-paint'
-import { boardViewport } from '../../utils/board-viewport'
+import { boardCssSize, fitCellSize } from '../../utils/board-viewport'
 import {
   CellHistory,
   canRevise,
@@ -57,7 +57,7 @@ const statusTitle = ref('正在读取稿件…')
 const statusHint = ref('')
 const canRetry = ref(false)
 const title = ref('')
-const tool = ref<Tool>('pencil')
+const tool = ref<Tool>('pan')
 const showCodes = ref(false)
 const showMat = ref(false)
 const cellPx = ref(6)
@@ -78,20 +78,13 @@ let cells: Uint8Array<ArrayBufferLike> = new Uint8Array()
 let saved: Uint8Array<ArrayBufferLike> = new Uint8Array()
 let canvas: MiniCanvas | null = null
 let ctx: PaintCtx | null = null
-let rect = { left: 0, top: 0 }
+let rect = { left: 0, top: 0, width: 0, height: 0 }
 let stroking = false
 let last: [number, number] | null = null
 let panLast: { x: number; y: number } | null = null
 let viewWidth = 375
 
-const cssSize = computed(() => boardSize.value * cellPx.value)
-const frame = computed(() =>
-  boardViewport({
-    canvas: cssSize.value,
-    viewWidth: stageWidth.value || viewWidth,
-    viewHeight: stageHeight.value,
-  }),
-)
+const cssSize = computed(() => boardCssSize(boardSize.value, cellPx.value))
 const pegs = computed(() => palette.value.reduce((sum, item) => sum + item.count, 0))
 const usedColors = computed(() => palette.value.filter((item) => item.count > 0).length)
 const ranked = computed(() =>
@@ -200,11 +193,16 @@ async function boot(id: string) {
     eraseIndex.value = dominantIndex(recount(cells, palette.value.length))
     saved = new Uint8Array(cells)
     history.reset(cells)
+    tool.value = 'pan'
     cellPx.value = fitCell(side)
+    scrollLeft.value = 0
+    scrollTop.value = 0
     syncHist()
     ready.value = true
     await nextTick()
     await measureStage()
+    const fitted = fitCell(side)
+    if (fitted !== cellPx.value) cellPx.value = fitted
     await initCanvas()
   } catch (e) {
     showIdle(readableError(e, '稿件读不出来'), '可以重试，或回到稿件库另选一张。', true)
@@ -215,9 +213,7 @@ async function boot(id: string) {
 }
 
 function fitCell(side: number): number {
-  const avail = Math.max(120, viewWidth - 16)
-  const fitted = Math.floor(avail / side)
-  return Math.min(zoomCap(side), Math.max(3, Math.min(fitted, 10)))
+  return fitCellSize(side, stageWidth.value || viewWidth)
 }
 
 function zoomCap(side: number): number {
@@ -225,16 +221,16 @@ function zoomCap(side: number): number {
 }
 
 function zoom(dir: number) {
-  const next = Math.min(zoomCap(boardSize.value), Math.max(3, cellPx.value + dir * 2))
+  const floor = Math.min(3, fitCell(boardSize.value))
+  const next = Math.min(zoomCap(boardSize.value), Math.max(floor, cellPx.value + dir * 2))
   if (next === cellPx.value) {
     showTip(dir > 0 ? '已经放到最大' : '已经缩到最小')
     return
   }
   cellPx.value = next
-  nextTick(() => {
-    resizeAndPaint()
-    centerBoard()
-  })
+  scrollLeft.value = 0
+  scrollTop.value = 0
+  nextTick(() => resizeAndPaint())
 }
 
 function toggleCodes() {
@@ -251,7 +247,6 @@ function toggleMat() {
 function measureStage(): Promise<void> {
   return new Promise((resolve) => {
     if (!proxy) {
-      centerBoard()
       resolve()
       return
     }
@@ -268,27 +263,8 @@ function measureStage(): Promise<void> {
       const width = rows[3]?.width || 0
       if (width) stageWidth.value = width
       if (toolH && dockH) stageHeight.value = Math.max(160, pageH - toolH - dockH)
-      centerBoard()
       resolve()
     })
-  })
-}
-
-function centerBoard() {
-  const next = frame.value
-  placeScroll(scrollLeft, next.scrollLeft)
-  placeScroll(scrollTop, next.scrollTop)
-}
-
-function placeScroll(target: { value: number }, next: number) {
-  if (next === 0) {
-    target.value = 0
-    return
-  }
-  if (target.value === next) return
-  target.value = 0
-  nextTick(() => {
-    target.value = next
   })
 }
 
@@ -327,9 +303,23 @@ async function initCanvas(attempt = 0) {
 function resizeAndPaint() {
   if (!canvas || !ctx) return
   const size = cssSize.value
-  canvas.width = size
-  canvas.height = size
+  const ratio = pixelRatio()
+  // 位图按屏幕倍率放大，避免高分屏只画出左半边；上限沿用原来的 2048。
+  const buffer = Math.min(2048, Math.max(1, Math.round(size * ratio)))
+  canvas.width = buffer
+  canvas.height = buffer
+  ctx.setTransform?.(buffer / size, 0, 0, buffer / size, 0, 0)
   paint(null)
+}
+
+function pixelRatio(): number {
+  try {
+    const ratio = Number(uni.getSystemInfoSync().pixelRatio)
+    if (ratio > 0 && ratio <= 4) return ratio
+  } catch {
+    /* 量不到就按 1 倍画 */
+  }
+  return 1
 }
 
 function paint(dirty: Spot[] | null) {
@@ -339,7 +329,7 @@ function paint(dirty: Spot[] | null) {
     {
       cells,
       width: boardSize.value,
-      cell: cellPx.value,
+      cell: cssSize.value / boardSize.value,
       palette: palette.value,
       showCodes: showCodes.value,
     },
@@ -405,7 +395,14 @@ function measureCanvas(): Promise<void> {
       .select('#boardCanvas')
       .boundingClientRect((result) => {
         const info = Array.isArray(result) ? result[0] : result
-        if (info?.width) rect = { left: info.left || 0, top: info.top || 0 }
+        if (info?.width) {
+          rect = {
+            left: info.left || 0,
+            top: info.top || 0,
+            width: info.width,
+            height: info.height || info.width,
+          }
+        }
         resolve()
       })
       .exec()
@@ -423,7 +420,10 @@ function pointOf(e: unknown): { x: number; y: number } | null {
 }
 
 function cellAt(p: { x: number; y: number }): [number, number] {
-  return [Math.floor((p.x - rect.left) / cellPx.value), Math.floor((p.y - rect.top) / cellPx.value)]
+  const fallback = cssSize.value / boardSize.value
+  const cellW = rect.width > 0 ? rect.width / boardSize.value : fallback
+  const cellH = rect.height > 0 ? rect.height / boardSize.value : fallback
+  return [Math.floor((p.x - rect.left) / cellW), Math.floor((p.y - rect.top) / cellH)]
 }
 
 async function onStart(e: unknown) {
@@ -576,28 +576,18 @@ function wait(ms: number) {
       :scroll-top="scrollTop"
       :style="{ height: stageHeight + 'px' }"
     >
-      <view
-        class="stage-pad"
-        :style="{
-          width: cssSize + 'px',
-          height: cssSize + 'px',
-          paddingLeft: frame.offsetX + 'px',
-          paddingTop: frame.offsetY + 'px',
-        }"
-      >
-        <canvas
-          id="boardCanvas"
-          canvas-id="boardCanvas"
-          type="2d"
-          class="board"
-          disable-scroll
-          :style="{ width: cssSize + 'px', height: cssSize + 'px' }"
-          @touchstart="onStart"
-          @touchmove.stop.prevent="onMove"
-          @touchend="onEnd"
-          @touchcancel="onEnd"
-        />
-      </view>
+      <canvas
+        id="boardCanvas"
+        canvas-id="boardCanvas"
+        type="2d"
+        class="board"
+        disable-scroll
+        :style="{ width: cssSize + 'px', height: cssSize + 'px' }"
+        @touchstart="onStart"
+        @touchmove.stop.prevent="onMove"
+        @touchend="onEnd"
+        @touchcancel="onEnd"
+      />
     </scroll-view>
     <view class="dock">
       <view class="info">
@@ -663,7 +653,7 @@ function wait(ms: number) {
 </template>
 
 <style scoped lang="scss">
-.page { display: flex; flex-direction: column; background: $bg; }
+.page { display: flex; flex-direction: column; background: $bg; overflow: hidden; }
 .idle { display: block; box-sizing: border-box; padding: 24rpx; min-height: 100%; }
 .line { width: 100%; }
 .empty-title { display: block; color: $ink; font-size: 30rpx; font-weight: 700; line-height: 1.5; }
@@ -671,7 +661,7 @@ function wait(ms: number) {
 .idle-actions { display: flex; flex-direction: column; gap: 12rpx; width: 100%; margin-top: 20rpx; }
 .idle-actions .btn { flex: none; width: 100%; }
 .toolbar {
-  display: flex; gap: 8rpx; padding: 8rpx 12rpx; background: $card; border-bottom: 1rpx solid $line;
+  display: flex; flex-shrink: 0; gap: 8rpx; padding: 8rpx 12rpx; background: $card; border-bottom: 1rpx solid $line;
 }
 .tool {
   padding: 8rpx 12rpx; border-radius: 999rpx; background: $brand-lighter; color: $ink-2;
@@ -681,10 +671,9 @@ function wait(ms: number) {
 .tool.on { background: $brand; }
 .tool.on text { color: #fff; }
 .tool.off { opacity: 0.4; }
-.stage { width: 100%; background: #efe8e2; }
-.stage-pad { box-sizing: content-box; }
+.stage { flex-shrink: 0; width: 100%; background: #efe8e2; }
 .board { display: block; }
-.dock { background: $card; border-top: 1rpx solid $line; padding: 8rpx 16rpx 16rpx; }
+.dock { flex-shrink: 0; background: $card; border-top: 1rpx solid $line; padding: 8rpx 16rpx 16rpx; }
 .info { display: flex; align-items: center; gap: 12rpx; min-width: 0; }
 .now { display: flex; align-items: center; gap: 8rpx; max-width: 42%; }
 .now-name { font-size: 22rpx; font-weight: 700; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
