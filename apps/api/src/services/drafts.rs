@@ -1,8 +1,9 @@
-//! 稿件：出稿、列表、详情、改名、删除、收藏。
+//! 稿件：出稿、列表、详情、改名、改格子、删除、收藏。
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -222,6 +223,302 @@ pub async fn rename(
         return Err(AppError::NotFound("稿件不存在".into()));
     }
     get_detail(state, user_id, draft_id).await
+}
+
+/// 把格子写回原稿，或另存为一张新稿。
+///
+/// `cells` 仍是行优先的色板下标（`BYTEA`）。色板沿用稿件原来的 code / name / hex，只重算 count。
+/// 预览用新的对象键，避免小程序按旧地址命中缓存。旧预览文件留着：出稿任务可能还指着第一张图。
+pub async fn update_pattern(
+    state: &AppState,
+    user_id: Uuid,
+    draft_id: Uuid,
+    cells_b64: &str,
+    save_as: bool,
+    title: Option<&str>,
+) -> AppResult<DraftDetail> {
+    gate_owner(&state.db, user_id, draft_id, "修改").await?;
+    let row = sqlx::query_as::<_, PatternRow>(
+        r#"
+        SELECT title, board_size, palette, source_key, palette_pref,
+               pipeline, provider, remove_bg, cartoon_strength, subject_type,
+               palette_brand, matted_key, cartoon_key, pipeline_tags
+        FROM drafts
+        WHERE id = $1
+        "#,
+    )
+    .bind(draft_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("稿件不存在".into()))?;
+
+    let new_title = if save_as {
+        Some(copy_title(title, &row.title)?)
+    } else {
+        None
+    };
+    let cells = decode_cells(cells_b64)?;
+    let (palette, color_count, peg_count, pattern) =
+        prepare_pattern(&row.palette, &cells, row.board_size)?;
+    let png = pixel::render_preview_png(&pattern)?;
+    let target_id = if save_as { Uuid::new_v4() } else { draft_id };
+    let preview_key = format!("previews/edit/{target_id}/{}.png", Uuid::new_v4());
+    state
+        .storage
+        .put_object(&preview_key, &png, "image/png")
+        .await?;
+
+    let written = if let Some(title) = new_title {
+        insert_pattern_copy(
+            state,
+            user_id,
+            target_id,
+            &title,
+            &row,
+            &palette,
+            &cells,
+            color_count,
+            peg_count,
+            &preview_key,
+        )
+        .await
+    } else {
+        overwrite_pattern(
+            state,
+            user_id,
+            draft_id,
+            &palette,
+            &cells,
+            color_count,
+            peg_count,
+            &preview_key,
+        )
+        .await
+    };
+    if let Err(err) = written {
+        let _ = state.storage.delete_object(&preview_key).await;
+        return Err(err);
+    }
+    get_detail(state, user_id, target_id).await
+}
+
+async fn overwrite_pattern(
+    state: &AppState,
+    user_id: Uuid,
+    draft_id: Uuid,
+    palette: &serde_json::Value,
+    cells: &[u8],
+    color_count: i32,
+    peg_count: i32,
+    preview_key: &str,
+) -> AppResult<()> {
+    let updated = sqlx::query(
+        r#"
+        UPDATE drafts
+        SET palette = $3,
+            cells = $4,
+            color_count = $5,
+            peg_count = $6,
+            preview_key = $7
+        WHERE id = $1
+          AND user_id = $2
+          AND is_official = FALSE
+          AND is_template = FALSE
+        "#,
+    )
+    .bind(draft_id)
+    .bind(user_id)
+    .bind(palette)
+    .bind(cells)
+    .bind(color_count)
+    .bind(peg_count)
+    .bind(preview_key)
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound("稿件不存在".into()));
+    }
+    Ok(())
+}
+
+async fn insert_pattern_copy(
+    state: &AppState,
+    user_id: Uuid,
+    draft_id: Uuid,
+    title: &str,
+    row: &PatternRow,
+    palette: &serde_json::Value,
+    cells: &[u8],
+    color_count: i32,
+    peg_count: i32,
+    preview_key: &str,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO drafts (
+            id, user_id, title, board_size, color_count, peg_count,
+            palette, cells, preview_key, source_key, palette_pref,
+            is_template, is_official,
+            pipeline, provider, remove_bg, cartoon_strength, subject_type,
+            palette_brand, matted_key, cartoon_key, pipeline_tags
+        )
+        VALUES (
+            $1,$2,$3,$4,$5,$6,
+            $7,$8,$9,$10,$11,
+            FALSE, FALSE,
+            $12,$13,$14,$15,$16,$17,$18,$19,$20
+        )
+        "#,
+    )
+    .bind(draft_id)
+    .bind(user_id)
+    .bind(title)
+    .bind(row.board_size)
+    .bind(color_count)
+    .bind(peg_count)
+    .bind(palette)
+    .bind(cells)
+    .bind(preview_key)
+    .bind(&row.source_key)
+    .bind(&row.palette_pref)
+    .bind(&row.pipeline)
+    .bind(&row.provider)
+    .bind(row.remove_bg)
+    .bind(&row.cartoon_strength)
+    .bind(&row.subject_type)
+    .bind(&row.palette_brand)
+    .bind(&row.matted_key)
+    .bind(&row.cartoon_key)
+    .bind(&row.pipeline_tags)
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+fn copy_title(explicit: Option<&str>, original: &str) -> AppResult<String> {
+    if let Some(raw) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+        return normalize_title(raw);
+    }
+    const SUFFIX: &str = " 副本";
+    let room = 40usize.saturating_sub(SUFFIX.chars().count());
+    let mut title: String = original.trim().chars().take(room).collect();
+    title.push_str(SUFFIX);
+    normalize_title(&title)
+}
+
+fn decode_cells(raw: &str) -> AppResult<Vec<u8>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest("图纸数据有误".into()));
+    }
+    STANDARD
+        .decode(trimmed)
+        .map_err(|_| AppError::BadRequest("图纸数据有误".into()))
+}
+
+fn prepare_pattern(
+    palette_json: &serde_json::Value,
+    cells: &[u8],
+    board_size: i32,
+) -> AppResult<(serde_json::Value, i32, i32, pixel::Pattern)> {
+    if !matches!(board_size, 52 | 78 | 104) {
+        return Err(AppError::BadRequest("珠板尺寸仅支持 52、78、104".into()));
+    }
+    let side = board_size as usize;
+    if cells.len() != side * side {
+        return Err(AppError::BadRequest("珠格数量和底板尺寸不一致".into()));
+    }
+    let swatches = parse_palette_strict(palette_json)?;
+    let mut counts = vec![0i32; swatches.len()];
+    for &idx in cells {
+        let slot = idx as usize;
+        if slot >= swatches.len() {
+            return Err(AppError::BadRequest("珠格色号超出色板".into()));
+        }
+        counts[slot] += 1;
+    }
+    let color_count = counts.iter().filter(|count| **count > 0).count() as i32;
+    let peg_count = board_size * board_size;
+    let palette = json!(swatches
+        .iter()
+        .enumerate()
+        .map(|(index, swatch)| json!({
+            "code": swatch.code,
+            "name": swatch.name,
+            "hex": swatch.hex,
+            "count": counts[index],
+        }))
+        .collect::<Vec<_>>());
+    let pattern = pixel::Pattern {
+        width: board_size as u32,
+        palette: swatches
+            .iter()
+            .enumerate()
+            .map(|(index, swatch)| pixel::Swatch {
+                code: swatch.code.clone(),
+                name: swatch.name.clone(),
+                hex: swatch.hex.clone(),
+                rgb: swatch.rgb,
+                count: counts[index],
+            })
+            .collect(),
+        cells: cells.to_vec(),
+    };
+    Ok((palette, color_count, peg_count, pattern))
+}
+
+struct StoredSwatch {
+    code: String,
+    name: String,
+    hex: String,
+    rgb: [u8; 3],
+}
+
+fn parse_palette_strict(value: &serde_json::Value) -> AppResult<Vec<StoredSwatch>> {
+    let Some(items) = value.as_array() else {
+        return Err(AppError::BadRequest("色板无法读取".into()));
+    };
+    if items.is_empty() || items.len() > 256 {
+        return Err(AppError::BadRequest("色板无法读取".into()));
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let code = item
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let name = item
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let hex = item.get("hex").and_then(|v| v.as_str()).unwrap_or("");
+        if code.is_empty() || name.is_empty() {
+            return Err(AppError::BadRequest("色板无法读取".into()));
+        }
+        let Some(rgb) = parse_hex(hex) else {
+            return Err(AppError::BadRequest("色板无法读取".into()));
+        };
+        out.push(StoredSwatch {
+            code: code.to_string(),
+            name: name.to_string(),
+            hex: format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]),
+            rgb,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_hex(hex: &str) -> Option<[u8; 3]> {
+    let h = hex.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some([r, g, b])
 }
 
 /// 删除自己的稿。
@@ -488,6 +785,24 @@ fn detail_from_row(state: &AppState, viewer: Uuid, row: &DraftDetailRow) -> Draf
 }
 
 #[derive(sqlx::FromRow)]
+struct PatternRow {
+    title: String,
+    board_size: i32,
+    palette: serde_json::Value,
+    source_key: Option<String>,
+    palette_pref: String,
+    pipeline: String,
+    provider: String,
+    remove_bg: bool,
+    cartoon_strength: String,
+    subject_type: String,
+    palette_brand: String,
+    matted_key: Option<String>,
+    cartoon_key: Option<String>,
+    pipeline_tags: serde_json::Value,
+}
+
+#[derive(sqlx::FromRow)]
 struct DraftGateRow {
     user_id: Uuid,
     is_official: bool,
@@ -544,4 +859,59 @@ struct DraftDetailRow {
     author_nickname: String,
     favorited: bool,
     work_id: Option<Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn palette() -> serde_json::Value {
+        json!([
+            {"code":"A1","name":"珊瑚","hex":"#FF6B5B","count":1},
+            {"code":"W1","name":"米白","hex":"#f7f1ea","count":1}
+        ])
+    }
+
+    #[test]
+    fn pattern_edit_recounts_indexes_and_rejects_bad_cells() {
+        let mut cells = vec![0u8; 52 * 52];
+        cells[0] = 1;
+        cells[8] = 1;
+        let (edited, color_count, peg_count, pattern) =
+            prepare_pattern(&palette(), &cells, 52).unwrap();
+        assert_eq!(peg_count, 52 * 52);
+        assert_eq!(color_count, 2);
+        assert_eq!(edited[0]["count"].as_i64(), Some((52 * 52 - 2) as i64));
+        assert_eq!(edited[1]["count"].as_i64(), Some(2));
+        assert_eq!(edited[1]["hex"].as_str(), Some("#F7F1EA"));
+        assert_eq!(pattern.cells.len(), 52 * 52);
+        assert_eq!(pattern.palette[1].rgb, [0xF7, 0xF1, 0xEA]);
+        let png = pixel::render_preview_png(&pattern).unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+
+        let short = vec![0u8; 10];
+        let err = prepare_pattern(&palette(), &short, 52).unwrap_err();
+        assert!(err.to_string().contains("不一致"));
+
+        cells[1] = 9;
+        let err = prepare_pattern(&palette(), &cells, 52).unwrap_err();
+        assert!(err.to_string().contains("超出色板"));
+
+        let mut wide = vec![0u8; 104 * 104];
+        wide[3] = 1;
+        let (_, colors, peg, _) = prepare_pattern(&palette(), &wide, 104).unwrap();
+        assert_eq!(peg, 104 * 104);
+        assert_eq!(colors, 2);
+
+        assert!(decode_cells("").is_err());
+        assert!(decode_cells("@@@").is_err());
+        assert_eq!(decode_cells("AAE=").unwrap(), vec![0, 1]);
+
+        let copied = copy_title(None, &"豆".repeat(40)).unwrap();
+        assert_eq!(copied.chars().count(), 40);
+        assert!(copied.ends_with("副本"));
+        assert!(copy_title(Some("  "), "原稿").unwrap().ends_with("副本"));
+        assert_eq!(copy_title(Some(" 窗边 "), "原稿").unwrap(), "窗边");
+        assert!(copy_title(Some(&"豆".repeat(41)), "原稿").is_err());
+    }
 }

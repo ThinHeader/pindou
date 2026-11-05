@@ -311,6 +311,8 @@ export const draftsApi = {
   remove: (id: string) =>
     http.del<{ deleted: boolean; work_deleted: boolean }>(`/api/v1/drafts/${id}`),
   favorite: (id: string) => http.post<{ favorited: boolean }>(`/api/v1/drafts/${id}/favorite`),
+  savePattern: (id: string, body: { cells_b64: string; save_as?: boolean; title?: string }) =>
+    http.put<DraftDetail>(`/api/v1/drafts/${id}/pattern`, body),
 }
 
 export const jobsApi = {

@@ -80,6 +80,11 @@ function exportImage() {
   showTip('长按图片可保存')
 }
 
+function revise() {
+  if (!draft.value) return
+  uni.navigateTo({ url: `/pages/edit/board?id=${draft.value.id}` })
+}
+
 function again() {
   if (!draft.value?.source_key) {
     showTip('这张稿没有原图，请重新选图')
@@ -145,6 +150,7 @@ function nextBead() {
       <text class="next" @click="nextBead">下一种</text>
     </view>
 
+    <view v-if="owned" class="revise" @click="revise">改这张稿</view>
     <view v-if="owned && draft.source_key" class="again" @click="again">再次出稿</view>
     <view class="actions">
       <view class="btn ghost" @click="exportImage">导出</view>
@@ -166,8 +172,18 @@ function nextBead() {
 .tags { display: flex; flex-wrap: wrap; gap: 10rpx; margin-top: 16rpx; }
 .tag { background: $brand-lighter; color: $brand-dark; border-radius: 999rpx; padding: 6rpx 16rpx; font-size: 22rpx; }
 .stats { display: flex; background: $card; border-radius: 24rpx; border: 1rpx solid $line; margin-top: 20rpx; }
-.again {
+.revise {
   margin-top: 24rpx;
+  text-align: center;
+  background: $card;
+  color: $brand-dark;
+  border: 1rpx solid $brand;
+  border-radius: 999rpx;
+  padding: 22rpx;
+  font-weight: 700;
+}
+.again {
+  margin-top: 16rpx;
   text-align: center;
   background: $brand;
   color: #fff;

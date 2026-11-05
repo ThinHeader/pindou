@@ -4,6 +4,7 @@ use std::io::Cursor;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
+use base64::Engine;
 use http_body_util::BodyExt;
 use image::{ImageFormat, Rgba, RgbaImage};
 use serde_json::{json, Value};
@@ -727,6 +728,275 @@ async fn draft_title_rename_and_delete() {
     assert_eq!(status, StatusCode::OK, "{only_draft}");
     assert_eq!(only_draft["deleted"], true);
     assert_eq!(only_draft["work_deleted"], false);
+}
+
+#[tokio::test]
+async fn draft_pattern_edit_overwrites_and_saves_as() {
+    let app = app().await;
+    let code = format!("mock:edit-{}", Uuid::new_v4());
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    let token = login["token"].as_str().unwrap();
+    let balance = grant_pack(&app, token).await;
+
+    let generated = generate_done(
+        &app,
+        token,
+        json!({
+            "image_base64": png_base64(),
+            "board_size": 52,
+            "color_count": 8,
+            "title": "待改的稿"
+        }),
+    )
+    .await;
+    let draft_id = generated["draft"]["id"].as_str().unwrap();
+    let (status, detail) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let original_cells = detail["cells_b64"].as_str().unwrap().to_string();
+    let original_preview = detail["preview_url"].as_str().unwrap().to_string();
+    let palette = detail["palette"].as_array().unwrap();
+    assert!(palette.len() >= 2, "{detail}");
+    let mut cells = base64::engine::general_purpose::STANDARD
+        .decode(original_cells.as_bytes())
+        .unwrap();
+    assert_eq!(cells.len(), 52 * 52);
+    let from = cells[0];
+    let to = cells.iter().copied().find(|idx| *idx != from).unwrap();
+    cells[0] = to;
+    let edited = base64::engine::general_purpose::STANDARD.encode(&cells);
+
+    let (status, denied) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{draft_id}/pattern"),
+        None,
+        Some(json!({ "cells_b64": edited })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+
+    let (status, bad_len) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/drafts/{draft_id}/pattern"),
+        Some(token),
+        Some(json!({ "cells_b64": base64_std(&[0u8; 10]) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad_len}");
+    assert!(bad_len["message"].as_str().unwrap_or("").contains("不一致"));
+
+    let mut overflow = cells.clone();
+    overflow[1] = 255;
+    let (status, bad_idx) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{draft_id}/pattern"),
+        Some(token),
+        Some(json!({
+            "cells_b64": base64::engine::general_purpose::STANDARD.encode(&overflow)
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad_idx}");
+    assert!(bad_idx["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("超出色板"));
+
+    let (status, still) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{still}");
+    assert_eq!(still["cells_b64"], original_cells);
+
+    let (status, updated) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{draft_id}/pattern"),
+        Some(token),
+        Some(json!({ "cells_b64": edited })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["id"], draft_id);
+    assert_eq!(updated["title"], "待改的稿");
+    assert_eq!(updated["board_size"], 52);
+    assert_eq!(updated["peg_count"], 52 * 52);
+    let saved = base64::engine::general_purpose::STANDARD
+        .decode(updated["cells_b64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(saved, cells);
+    let sum: i64 = updated["palette"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|swatch| swatch["count"].as_i64().unwrap())
+        .sum();
+    assert_eq!(sum, 52 * 52);
+    assert_eq!(
+        updated["palette"][to as usize]["count"].as_i64().unwrap(),
+        detail["palette"][to as usize]["count"].as_i64().unwrap() + 1
+    );
+    assert_eq!(
+        updated["palette"][from as usize]["count"].as_i64().unwrap(),
+        detail["palette"][from as usize]["count"].as_i64().unwrap() - 1
+    );
+    assert_ne!(updated["preview_url"], original_preview);
+    let used = updated["palette"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|swatch| swatch["count"].as_i64().unwrap() > 0)
+        .count() as i64;
+    assert_eq!(updated["color_count"], used);
+
+    let new_path = preview_path(updated["preview_url"].as_str().unwrap());
+    let (status, png) = get_bytes(&app, &new_path).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(png.starts_with(b"\x89PNG"));
+    let old_path = preview_path(&original_preview);
+    let (status, old_png) = get_bytes(&app, &old_path).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(old_png.starts_with(b"\x89PNG"));
+
+    let (status, credits) = call(&app, "GET", "/api/v1/credits/me", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "{credits}");
+    assert_eq!(credits["balance"], balance - 1, "改稿不扣积分");
+
+    let other_code = format!("mock:edit-other-{}", Uuid::new_v4());
+    let (status, other_login) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/wx-login",
+        None,
+        Some(json!({ "code": other_code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{other_login}");
+    let other = other_login["token"].as_str().unwrap();
+    let (status, forbidden) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{draft_id}/pattern"),
+        Some(other),
+        Some(json!({ "cells_b64": edited })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{forbidden}");
+
+    let (status, official) = call(
+        &app,
+        "GET",
+        "/api/v1/drafts?tab=official",
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{official}");
+    let official_id = official["items"][0]["id"].as_str().unwrap();
+    let (status, official_edit) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{official_id}/pattern"),
+        Some(token),
+        Some(json!({ "cells_b64": edited })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{official_edit}");
+
+    let (status, missing) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{}/pattern", Uuid::new_v4()),
+        Some(token),
+        Some(json!({ "cells_b64": edited })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+
+    let (status, too_long) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{draft_id}/pattern"),
+        Some(token),
+        Some(json!({
+            "cells_b64": edited,
+            "save_as": true,
+            "title": "豆".repeat(41)
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{too_long}");
+
+    let (status, copied) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/drafts/{draft_id}/pattern"),
+        Some(token),
+        Some(json!({ "cells_b64": original_cells, "save_as": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{copied}");
+    let copy_id = copied["id"].as_str().unwrap();
+    assert_ne!(copy_id, draft_id);
+    assert_eq!(copied["title"], "待改的稿 副本");
+    assert_eq!(copied["cells_b64"], original_cells);
+    assert_ne!(copied["preview_url"], updated["preview_url"]);
+
+    let (status, original_again) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/drafts/{draft_id}"),
+        Some(token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{original_again}");
+    assert_eq!(original_again["cells_b64"], edited);
+    assert_eq!(original_again["title"], "待改的稿");
+
+    let (status, named) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/drafts/{draft_id}/pattern"),
+        Some(token),
+        Some(json!({
+            "cells_b64": edited,
+            "save_as": true,
+            "title": " 另存的窗边 "
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{named}");
+    assert_eq!(named["title"], "另存的窗边");
+    assert_ne!(named["id"], draft_id);
+    assert_ne!(named["id"], copy_id);
+}
+
+fn preview_path(url: &str) -> String {
+    let rest = url.split("/files/").nth(1).expect("preview url");
+    format!("/files/{rest}")
 }
 
 async fn get_bytes(app: &axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {

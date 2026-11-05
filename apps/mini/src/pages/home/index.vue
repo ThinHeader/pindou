@@ -32,8 +32,11 @@ onShow(async () => {
 function goCreate() {
   uni.switchTab({ url: '/pages/create/index' })
 }
+function goEdit() {
+  uni.switchTab({ url: '/pages/edit/index' })
+}
 function goTutorials() {
-  uni.switchTab({ url: '/pages/tutorials/index' })
+  uni.navigateTo({ url: '/pages/tutorials/index' })
 }
 function goLibrary() {
   uni.switchTab({ url: '/pages/library/index' })
@@ -70,7 +73,7 @@ function stockSoon() {
 
     <view class="shortcuts">
       <view class="shortcut" @click="goCreate"><text class="sico">🖼</text>相册出稿</view>
-      <view class="shortcut" @click="goTutorials"><text class="sico">▦</text>看教程</view>
+      <view class="shortcut" @click="goEdit"><text class="sico">✎</text>改稿</view>
       <view class="shortcut" @click="goLibrary"><text class="sico">▤</text>我的稿件</view>
       <view class="shortcut" @click="stockSoon">
         <text class="sico">🎨</text>豆色库存
