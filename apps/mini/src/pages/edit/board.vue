@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShow } from '@dcloudio/uni-app'
 import { computed, getCurrentInstance, nextTick, ref } from 'vue'
 import { draftsApi, errorOf } from '../../api/http'
 import type { PaletteColor } from '../../api/types'
@@ -8,11 +8,13 @@ import {
   CellHistory,
   canRevise,
   cellsEqual,
+  cellsWithinPalette,
   decodeCellsB64,
   dominantIndex,
   encodeCellsB64,
   floodFill,
   lineCells,
+  normalizeDraftId,
   paintIndex,
   recount,
 } from '../../utils/pattern'
@@ -48,7 +50,9 @@ const stageHeight = ref(280)
 const loading = ref(true)
 const ready = ref(false)
 const saving = ref(false)
-const failed = ref('')
+const statusTitle = ref('正在读取稿件…')
+const statusHint = ref('')
+const canRetry = ref(false)
 const title = ref('')
 const tool = ref<Tool>('pencil')
 const showCodes = ref(false)
@@ -66,6 +70,7 @@ const boardSize = ref(52)
 
 const history = new CellHistory()
 let draftId = ''
+let requestedId = ''
 let cells: Uint8Array<ArrayBufferLike> = new Uint8Array()
 let saved: Uint8Array<ArrayBufferLike> = new Uint8Array()
 let canvas: MiniCanvas | null = null
@@ -89,34 +94,97 @@ const base = computed(() => palette.value[eraseIndex.value])
 const codesReady = computed(() => codeVisible(cellPx.value))
 
 onLoad((query) => {
-  const info = uni.getSystemInfoSync()
-  pageHeight.value = info.windowHeight
-  viewWidth = info.windowWidth
-  void boot(String(query?.id || ''))
+  try {
+    const info = uni.getSystemInfoSync()
+    pageHeight.value = info.windowHeight
+    viewWidth = info.windowWidth
+  } catch {
+    pageHeight.value = 600
+  }
+  void boot(readId(query as Record<string, unknown> | undefined))
 })
 
+onShow(() => {
+  if (ready.value || loading.value || requestedId) return
+  const id = readId(null)
+  if (id) void boot(id)
+})
+
+function readId(query?: Record<string, unknown> | null): string {
+  const fromQuery = normalizeDraftId(query?.id)
+  if (fromQuery) return fromQuery
+  try {
+    const pages = getCurrentPages() as Array<{
+      options?: Record<string, unknown>
+      $page?: { options?: Record<string, unknown>; fullPath?: string }
+    }>
+    const current = pages[pages.length - 1]
+    const bag = current?.options || current?.$page?.options
+    const fromOptions = normalizeDraftId(bag?.id)
+    if (fromOptions) return fromOptions
+    const full = current?.$page?.fullPath || ''
+    const matched = /[?&]id=([^&]+)/.exec(full)
+    if (!matched) return ''
+    try {
+      return normalizeDraftId(decodeURIComponent(matched[1]))
+    } catch {
+      return normalizeDraftId(matched[1])
+    }
+  } catch {
+    return ''
+  }
+}
+
+function showIdle(title: string, hint: string, retry: boolean) {
+  statusTitle.value = title
+  statusHint.value = hint
+  canRetry.value = retry
+  ready.value = false
+}
+
+function retryLoad() {
+  if (!requestedId || loading.value) return
+  void boot(requestedId)
+}
+
+function goLibrary() {
+  uni.switchTab({ url: '/pages/library/index' })
+}
+
+function goPick() {
+  uni.switchTab({ url: '/pages/edit/index' })
+}
+
 async function boot(id: string) {
+  requestedId = id
   if (!id) {
     loading.value = false
-    failed.value = '没有选中稿件'
+    showIdle('还没有选中要改的稿', '从稿件库选一张自己的稿，再进来改格子。', false)
     return
   }
+  loading.value = true
+  showIdle('正在读取稿件…', '', false)
   try {
     const detail = await draftsApi.detail(id)
     if (!canRevise(detail)) {
-      showTip(detail.is_official || detail.is_template ? '官方稿不能改' : '只能改自己的稿')
-      setTimeout(() => uni.navigateBack(), 400)
+      const title = detail.is_official || detail.is_template ? '官方稿不能改' : '只能改自己的稿'
+      showTip(title)
+      showIdle(title, '请换一张自己出的稿。', false)
       return
+    }
+    const swatches = Array.isArray(detail.palette) ? detail.palette : []
+    if (!detail.cells_b64 || !detail.board_size || !swatches.length) {
+      throw new Error('这份稿还没有格子，不能改')
     }
     const side = detail.board_size
     cells = decodeCellsB64(detail.cells_b64, side * side)
-    if ([...cells].some((idx) => idx >= detail.palette.length)) {
-      throw new Error('珠格色号超出色板')
+    if (!cellsWithinPalette(cells, swatches.length)) {
+      throw new Error('这份稿的色板和格子对不上，暂时不能改')
     }
     draftId = detail.id
     title.value = detail.title
     boardSize.value = side
-    palette.value = detail.palette.map((item) => ({ ...item }))
+    palette.value = swatches.map((item) => ({ ...item }))
     colorIndex.value = 0
     eraseIndex.value = dominantIndex(recount(cells, palette.value.length))
     saved = new Uint8Array(cells)
@@ -128,7 +196,7 @@ async function boot(id: string) {
     measureStage()
     await initCanvas()
   } catch (e) {
-    failed.value = errorOf(e).message || '稿件读不出来'
+    showIdle(errorOf(e).message || '稿件读不出来', '可以重试，或回到稿件库另选一张。', true)
     showError(e, '稿件读不出来')
   } finally {
     loading.value = false
@@ -453,9 +521,9 @@ function wait(ms: number) {
         class="tool"
         :class="{ on: tool === item.id }"
         @click="tool = item.id"
-      >{{ item.label }}</view>
-      <view class="tool" :class="{ off: !canUndo }" @click="undo">撤销</view>
-      <view class="tool" :class="{ off: !canRedo }" @click="redo">重做</view>
+      ><text>{{ item.label }}</text></view>
+      <view class="tool" :class="{ off: !canUndo }" @click="undo"><text>撤销</text></view>
+      <view class="tool" :class="{ off: !canRedo }" @click="redo"><text>重做</text></view>
     </view>
     <scroll-view
       class="stage"
@@ -523,20 +591,34 @@ function wait(ms: number) {
         </view>
       </scroll-view>
       <view class="saves">
-        <view class="btn ghost" @click="save(true)">{{ saving ? '保存中' : '另存为新稿' }}</view>
-        <view class="btn primary" @click="save(false)">{{ saving ? '保存中' : '覆盖保存' }}</view>
+        <view class="btn ghost" @click="save(true)"><text>{{ saving ? '保存中' : '另存为新稿' }}</text></view>
+        <view class="btn primary" @click="save(false)"><text>{{ saving ? '保存中' : '覆盖保存' }}</text></view>
       </view>
       <text class="draft-name">{{ title }}</text>
     </view>
   </view>
-  <view v-else class="page idle" :style="{ height: pageHeight + 'px' }">
-    <view class="empty">{{ loading ? '读取稿件…' : failed || '稿件读不出来' }}</view>
+  <view v-else class="page idle">
+    <!-- 微信里 flex 子项上的裸文本高度为 0，只剩虚线框。文案放进 text，再包一层 view。 -->
+    <view class="empty">
+      <view class="line"><text class="empty-title">{{ statusTitle }}</text></view>
+      <view v-if="statusHint" class="line"><text class="empty-hint">{{ statusHint }}</text></view>
+      <view class="idle-actions">
+        <view v-if="canRetry" class="btn primary" @click="retryLoad"><text>重试</text></view>
+        <view class="btn ghost" @click="goLibrary"><text>去稿件库</text></view>
+        <view class="btn ghost" @click="goPick"><text>返回选稿</text></view>
+      </view>
+    </view>
   </view>
 </template>
 
 <style scoped lang="scss">
 .page { display: flex; flex-direction: column; background: $bg; }
-.idle { padding: 24rpx; }
+.idle { display: block; box-sizing: border-box; padding: 24rpx; min-height: 100%; }
+.line { width: 100%; }
+.empty-title { display: block; color: $ink; font-size: 30rpx; font-weight: 700; line-height: 1.5; }
+.empty-hint { display: block; margin-top: 8rpx; color: $ink-2; font-size: 26rpx; line-height: 1.5; }
+.idle-actions { display: flex; flex-direction: column; gap: 12rpx; width: 100%; margin-top: 20rpx; }
+.idle-actions .btn { flex: none; width: 100%; }
 .toolbar {
   display: flex; gap: 8rpx; padding: 8rpx 12rpx; background: $card; border-bottom: 1rpx solid $line;
 }
@@ -544,7 +626,9 @@ function wait(ms: number) {
   padding: 8rpx 12rpx; border-radius: 999rpx; background: $brand-lighter; color: $ink-2;
   font-size: 22rpx; font-weight: 700;
 }
-.tool.on { background: $brand; color: #fff; }
+.tool text { font-size: 22rpx; font-weight: 700; color: $ink-2; }
+.tool.on { background: $brand; }
+.tool.on text { color: #fff; }
 .tool.off { opacity: 0.4; }
 .stage { width: 100%; background: #efe8e2; }
 .board { display: block; }
@@ -581,8 +665,11 @@ function wait(ms: number) {
 .mat-cnt { font-weight: 700; font-size: 22rpx; }
 .saves { display: flex; gap: 12rpx; margin-top: 10rpx; }
 .btn { flex: 1; text-align: center; border-radius: 999rpx; padding: 16rpx 0; font-weight: 700; font-size: 26rpx; }
-.btn.primary { background: $brand; color: #fff; }
-.btn.ghost { background: $brand-lighter; color: $brand-dark; }
+.btn text { font-size: 26rpx; font-weight: 700; }
+.btn.primary { background: $brand; }
+.btn.primary text { color: #fff; }
+.btn.ghost { background: $brand-lighter; }
+.btn.ghost text { color: $brand-dark; }
 .draft-name {
   display: block; margin-top: 8rpx; color: $ink-3; font-size: 20rpx;
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;

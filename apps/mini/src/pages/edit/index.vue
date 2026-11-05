@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
-import { draftsApi } from '../../api/http'
+import { draftsApi, errorOf } from '../../api/http'
 import type { DraftCard } from '../../api/types'
 import { useUserStore } from '../../stores/user'
 import { boardLabel, ensureLogin, showError, showTip } from '../../utils/ui'
@@ -17,18 +17,23 @@ const tab = ref('mine')
 const keyword = ref('')
 const items = ref<DraftCard[]>([])
 const loading = ref(false)
+const failed = ref('')
 
 async function load() {
+  if (!user.token) user.hydrate()
   if (!user.isLoggedIn) {
     items.value = []
+    failed.value = ''
     return
   }
   loading.value = true
+  failed.value = ''
   try {
     const data = await draftsApi.list(tab.value, keyword.value.trim())
-    items.value = data.items
+    items.value = Array.isArray(data.items) ? data.items : []
   } catch (e) {
     items.value = []
+    failed.value = errorOf(e).message || '稿件加载失败'
     showError(e, '稿件加载失败')
   } finally {
     loading.value = false
@@ -36,8 +41,10 @@ async function load() {
 }
 
 onShow(() => {
+  if (!user.token) user.hydrate()
   if (!user.isLoggedIn) {
     items.value = []
+    failed.value = ''
     return
   }
   load()
@@ -59,6 +66,10 @@ function open(item: DraftCard) {
 
 function goCreate() {
   uni.switchTab({ url: '/pages/create/index' })
+}
+
+function goLibrary() {
+  uni.switchTab({ url: '/pages/library/index' })
 }
 </script>
 
@@ -82,10 +93,20 @@ function goCreate() {
         class="pill"
         :class="{ on: tab === pill.id }"
         @click="pick(pill.id)"
-      >{{ pill.label }}</view>
+      ><text>{{ pill.label }}</text></view>
     </view>
-    <view v-if="!user.isLoggedIn" class="empty" @click="ensureLogin()">登录后选择自己的稿来改</view>
-    <view v-else-if="loading" class="muted">加载中…</view>
+    <view v-if="!user.isLoggedIn" class="empty">
+      <view class="line"><text>登录后才能选择自己的稿来改</text></view>
+      <view class="line" @click="ensureLogin()"><text class="go">去登录</text></view>
+    </view>
+    <view v-else-if="loading" class="empty">
+      <view class="line"><text>正在加载稿件…</text></view>
+    </view>
+    <view v-else-if="failed" class="empty">
+      <view class="line"><text>{{ failed }}</text></view>
+      <view class="line" @click="load"><text class="go">重试</text></view>
+      <view class="line" @click="goLibrary"><text class="go">去稿件库</text></view>
+    </view>
     <view v-else-if="items.length" class="grid">
       <view v-for="item in items" :key="item.id + item.preview_url" class="card" @click="open(item)">
         <image class="thumb" :src="item.preview_url" mode="aspectFill" />
@@ -97,15 +118,17 @@ function goCreate() {
       </view>
     </view>
     <view v-else class="empty">
-      <text>这里还没有可改的稿</text>
-      <text class="go" @click="goCreate">去出稿</text>
+      <view class="line"><text>这里还没有可改的稿</text></view>
+      <view class="line"><text class="hint">从稿件库选一张自己的稿，或先去出一张新稿。</text></view>
+      <view class="line" @click="goLibrary"><text class="go">去稿件库</text></view>
+      <view class="line" @click="goCreate"><text class="go">去出稿</text></view>
     </view>
   </view>
 </template>
 
 <style scoped lang="scss">
 .page { padding: 16rpx 24rpx 140rpx; }
-.lead { display: block; color: $ink-3; font-size: 24rpx; margin-bottom: 16rpx; }
+.lead { display: block; color: $ink-2; font-size: 26rpx; line-height: 1.5; margin-bottom: 16rpx; }
 .search {
   display: flex; align-items: center; gap: 12rpx;
   background: $card; border: 1rpx solid $line; border-radius: 999rpx;
@@ -117,7 +140,9 @@ function goCreate() {
   padding: 10rpx 22rpx; border-radius: 999rpx; background: $card;
   border: 1rpx solid $line; color: $ink-2; font-size: 24rpx;
 }
-.pill.on { background: $ink; color: #fff; border-color: $ink; }
+.pill text { font-size: 24rpx; color: $ink-2; }
+.pill.on { background: $ink; border-color: $ink; }
+.pill.on text { color: #fff; }
 .grid { @include feed-grid; }
 .card {
   @include feed-cell;
@@ -130,5 +155,8 @@ function goCreate() {
 .tags { display: block; margin-top: 6rpx; color: $ink-3; font-size: 22rpx; }
 .lock { display: block; margin-top: 6rpx; color: $ink-3; font-size: 20rpx; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 12rpx; }
-.go { color: $brand; font-weight: 700; }
+.line { width: 100%; }
+.line text { color: $ink; font-size: 28rpx; line-height: 1.5; }
+.line .hint { display: block; color: $ink-2; font-size: 24rpx; line-height: 1.5; }
+.line .go { color: $brand; font-weight: 700; }
 </style>
