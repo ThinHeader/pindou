@@ -68,12 +68,27 @@ impl SubjectKind {
 #[derive(Debug)]
 pub enum SeedreamError {
     Timeout,
-    Remote { message: String, retryable: bool },
+    /// `message` 给用户看，已经脱敏。`upstream` 只进运营告警，例如 Seedream code 和截断后的原因。
+    Remote {
+        message: String,
+        retryable: bool,
+        upstream: Option<String>,
+    },
     Decode,
     Unconfigured,
 }
 
 impl SeedreamError {
+    /// 服务端已知的上游摘要。用户可见文案不包含这段。
+    pub fn upstream_detail(&self) -> Option<String> {
+        match self {
+            Self::Timeout => Some("timeout".into()),
+            Self::Decode => Some("decode".into()),
+            Self::Unconfigured => Some("unconfigured".into()),
+            Self::Remote { upstream, .. } => upstream.clone(),
+        }
+    }
+
     pub fn into_message(self) -> String {
         let text = match self {
             Self::Timeout => "出稿超时了。本次未扣积分，可直接重试。".into(),
@@ -104,9 +119,12 @@ pub fn http_client() -> Result<reqwest::Client, SeedreamError> {
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
         .build()
-        .map_err(|_| SeedreamError::Remote {
-            message: "出稿服务暂时不可用。本次未扣积分。".into(),
-            retryable: false,
+        .map_err(|_| {
+            remote(
+                "出稿服务暂时不可用。本次未扣积分。",
+                false,
+                Some("http-client".into()),
+            )
         })
 }
 
@@ -170,10 +188,7 @@ pub async fn run_ark(
             Err(err) => return Err(err),
         }
     }
-    Err(last.unwrap_or(SeedreamError::Remote {
-        message: "出稿失败，请稍后重试。本次未扣积分。".into(),
-        retryable: false,
-    }))
+    Err(last.unwrap_or_else(|| remote("出稿失败，请稍后重试。本次未扣积分。", false, None)))
 }
 
 /// 同一张图得到同一张透明底平涂 PNG。尺寸跟原图走，不缩成珠板。
@@ -288,13 +303,12 @@ async fn post_generation(
     let text = response.text().await.map_err(map_http)?;
     if status.as_u16() == 429 || status.is_server_error() {
         tracing::warn!(status = %status, "方舟出稿暂时失败");
-        return Err(SeedreamError::Remote {
-            message: format!(
-                "出稿服务繁忙（{}），请稍后重试。本次未扣积分。",
-                status.as_u16()
-            ),
-            retryable: true,
-        });
+        let code = status.as_u16();
+        return Err(remote(
+            format!("出稿服务繁忙（{code}），请稍后重试。本次未扣积分。"),
+            true,
+            Some(format!("http {code}")),
+        ));
     }
     let value: Value = serde_json::from_str(&text).unwrap_or_else(
         |_| json!({ "error": { "message": text.chars().take(180).collect::<String>() } }),
@@ -346,17 +360,19 @@ fn decode_b64(raw: &str) -> Result<Vec<u8>, SeedreamError> {
 async fn download_image(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, SeedreamError> {
     let downloaded = http.get(url).send().await.map_err(map_http)?;
     if !downloaded.status().is_success() {
-        return Err(SeedreamError::Remote {
-            message: "出稿结果下载失败。本次未扣积分。".into(),
-            retryable: downloaded.status().is_server_error(),
-        });
+        return Err(remote(
+            "出稿结果下载失败。本次未扣积分。",
+            downloaded.status().is_server_error(),
+            Some(format!("download {}", downloaded.status().as_u16())),
+        ));
     }
     let bytes = downloaded.bytes().await.map_err(map_http)?;
     if bytes.len() > 8 * 1024 * 1024 {
-        return Err(SeedreamError::Remote {
-            message: "出稿结果过大。本次未扣积分。".into(),
-            retryable: false,
-        });
+        return Err(remote(
+            "出稿结果过大。本次未扣积分。",
+            false,
+            Some("image-too-large".into()),
+        ));
     }
     Ok(bytes.to_vec())
 }
@@ -366,10 +382,21 @@ fn map_http(err: reqwest::Error) -> SeedreamError {
         SeedreamError::Timeout
     } else {
         tracing::warn!(error = %err, "出稿请求失败");
-        SeedreamError::Remote {
-            message: "出稿失败，请稍后重试。本次未扣积分。".into(),
-            retryable: false,
-        }
+        remote(
+            "出稿失败，请稍后重试。本次未扣积分。",
+            false,
+            Some("transport".into()),
+        )
+    }
+}
+
+fn remote(message: impl Into<String>, retryable: bool, upstream: Option<String>) -> SeedreamError {
+    SeedreamError::Remote {
+        message: message.into(),
+        retryable,
+        upstream: upstream
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty()),
     }
 }
 
@@ -383,15 +410,30 @@ fn remote_from(value: &Value) -> SeedreamError {
         .pointer("/error/code")
         .and_then(|item| item.as_str())
         .unwrap_or("");
-    let text = if msg.is_empty() { code } else { msg };
-    let short: String = text.chars().take(80).collect();
-    if !short.is_empty() {
-        tracing::warn!(code, message = %short, "出稿上游返回错误");
+    let reason = clip(msg.trim(), 180);
+    let code = clip(code.trim(), 80);
+    let summary = match (code.is_empty(), reason.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(code.clone()),
+        (true, false) => Some(reason),
+        (false, false) => Some(format!("{code}: {reason}")),
+    };
+    let summary = summary
+        .map(|text| crate::services::alert::redact(&text, &[]))
+        .filter(|text| !text.is_empty());
+    if let Some(shown) = summary.as_deref() {
+        let short: String = shown.chars().take(80).collect();
+        tracing::warn!(code = %code, message = %short, "出稿上游返回错误");
     }
     SeedreamError::Remote {
         message: "出稿失败，请稍后重试。本次未扣积分。".into(),
         retryable: false,
+        upstream: summary,
     }
+}
+
+fn clip(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
 }
 
 fn data_url(bytes: &[u8]) -> String {
@@ -414,10 +456,11 @@ fn ensure_png(bytes: &[u8]) -> Result<Vec<u8>, SeedreamError> {
         || rgba.height() == 0
         || rgba.width() as u64 * rgba.height() as u64 > 16_000_000
     {
-        return Err(SeedreamError::Remote {
-            message: "出稿结果尺寸异常。本次未扣积分。".into(),
-            retryable: false,
-        });
+        return Err(remote(
+            "出稿结果尺寸异常。本次未扣积分。",
+            false,
+            Some("image-size".into()),
+        ));
     }
     encode_png(&rgba)
 }
@@ -569,11 +612,77 @@ mod tests {
                 "message": "the model doubao-seedream does not exist"
             }
         }));
+        assert_eq!(
+            err.upstream_detail().as_deref(),
+            Some("InvalidParameter: the model doubao-seedream does not exist")
+        );
         let text = err.into_message();
         assert_eq!(text, "出稿失败，请稍后重试。本次未扣积分。");
         assert!(!text.to_lowercase().contains("seedream"));
         assert!(!text.contains("doubao"));
         assert!(!text.contains("InvalidParameter"));
+    }
+
+    #[test]
+    fn policy_violation_alert_keeps_code_off_the_client_message() {
+        let err = remote_from(&json!({
+            "error": {
+                "code": "OutputImageSensitiveContentDetected.PolicyViolation",
+                "message": "copyright restrict https://cdn.example.com/files/uploads/ref.png?access_token=supersecrettokenvalue"
+            }
+        }));
+        let upstream = err.upstream_detail().expect("upstream");
+        assert!(upstream.contains("OutputImageSensitiveContentDetected.PolicyViolation"));
+        assert!(upstream.to_lowercase().contains("copyright"));
+        assert!(upstream.contains("uploads/ref.png"), "{upstream}");
+        assert!(!upstream.contains("https://"), "{upstream}");
+        assert!(!upstream.contains("supersecrettokenvalue"), "{upstream}");
+        let user = err.into_message();
+        assert_eq!(user, "出稿失败，请稍后重试。本次未扣积分。");
+        assert!(!user.contains("PolicyViolation"));
+        assert!(!user.to_lowercase().contains("copyright"));
+
+        let mut config = crate::config::Config::from_env();
+        config.dingtalk_webhook_url =
+            "https://oapi.dingtalk.com/robot/send?access_token=unit-test-token".into();
+        config.dingtalk_keyword = "STRATEGY".into();
+        config.dingtalk_webhook_secret.clear();
+        config.ark_api_key.clear();
+        let notice = crate::services::alert::FailureNotice {
+            job_id: uuid::Uuid::parse_str("143d6f5b-2a89-4214-8f23-4e78721b2229").unwrap(),
+            stage: "seedream".into(),
+            user_message: user,
+            upstream: Some(upstream),
+            provider: "seedream".into(),
+            board_size: 52,
+            object_key: Some("uploads/ref.png".into()),
+            at: chrono::DateTime::parse_from_rfc3339("2026-11-05T01:02:03Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        };
+        let outbound =
+            crate::services::alert::prepare_outbound(&config, &notice, 1_700_000_000_000)
+                .expect("webhook configured");
+        let value: serde_json::Value = serde_json::from_str(&outbound.body).unwrap();
+        let text = value["markdown"]["text"].as_str().unwrap();
+        assert!(text.contains("STRATEGY"), "{text}");
+        assert!(
+            text.contains("143d6f5b-2a89-4214-8f23-4e78721b2229"),
+            "{text}"
+        );
+        assert!(text.contains("stage: seedream"), "{text}");
+        assert!(
+            text.contains("OutputImageSensitiveContentDetected.PolicyViolation"),
+            "{text}"
+        );
+        let message_line = text.lines().find(|line| line.contains("message:")).unwrap();
+        assert!(!message_line.contains("PolicyViolation"), "{message_line}");
+        assert!(
+            !outbound.body.contains("unit-test-token"),
+            "{}",
+            outbound.body
+        );
+        assert!(!outbound.url.contains("sign="));
     }
 
     #[test]

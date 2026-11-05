@@ -6,11 +6,13 @@
 //! `POST /drafts/generate` 立刻返回任务，小程序轮询 `GET /jobs/{id}`。
 //! 积分只在整条管线成功、稿件写入的同一事务里扣 1 分。失败或取消不扣，也不退款。
 
+use chrono::Utc;
 use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::services::alert::{self, FailureNotice};
 use crate::services::credits::{self, GENERATE_COST};
 use crate::services::drafts::{self, DraftDetail};
 use crate::services::pixel::{self, Brand, Pref};
@@ -70,6 +72,16 @@ pub struct JobView {
 struct Fail {
     stage: String,
     message: String,
+    /// 运营告警用的上游摘要。用户可见 `message` 仍然脱敏。
+    upstream: Option<String>,
+}
+
+fn fail(stage: &str, message: impl Into<String>) -> Fail {
+    Fail {
+        stage: stage.to_string(),
+        message: message.into(),
+        upstream: None,
+    }
 }
 
 pub async fn enqueue(state: &AppState, user_id: Uuid, input: GenerateInput) -> AppResult<JobView> {
@@ -184,22 +196,21 @@ pub async fn cancel(state: &AppState, user_id: Uuid, job_id: Uuid) -> AppResult<
 async fn run(state: AppState, job_id: Uuid) {
     if let Err(fail) = run_inner(&state, job_id).await {
         tracing::info!(%job_id, stage = %fail.stage, message = %fail.message, "出稿管线未完成");
-        let _ = mark_failed(&state, job_id, &fail.stage, &fail.message).await;
+        let _ = mark_failed(&state, job_id, fail).await;
     }
 }
 
 async fn run_inner(state: &AppState, job_id: Uuid) -> Result<(), Fail> {
-    let row = load_job(state, job_id).await.map_err(|err| Fail {
-        stage: "upload".into(),
-        message: no_charge(user_message(err)),
-    })?;
+    let row = load_job(state, job_id)
+        .await
+        .map_err(|err| fail("upload", no_charge(user_message(err))))?;
     if is_terminal(&row.status) {
         return Ok(());
     }
-    let original_key = row.original_key.clone().ok_or_else(|| Fail {
-        stage: "upload".into(),
-        message: "找不到参考图，请重新上传。本次未扣积分。".into(),
-    })?;
+    let original_key = row
+        .original_key
+        .clone()
+        .ok_or_else(|| fail("upload", "找不到参考图，请重新上传。本次未扣积分。"))?;
     let pref = Pref::parse(&row.palette_pref).unwrap_or(Pref::Auto);
     let brand = Brand::parse(&row.palette_brand).unwrap_or(Brand::Generic);
     let source_bytes = read_object(state, &original_key, "upload").await?;
@@ -210,10 +221,7 @@ async fn run_inner(state: &AppState, job_id: Uuid) -> Result<(), Fail> {
     let stylized = match row.provider.as_str() {
         "mock" => seedream::mock_stylize(&source_bytes).map_err(|err| fail_vis("seedream", err))?,
         "seedream" => {
-            let client = seedream::http_client().map_err(|err| Fail {
-                stage: "seedream".into(),
-                message: err.into_message(),
-            })?;
+            let client = seedream::http_client().map_err(|err| fail_vis("seedream", err))?;
             // 原图字节已在本地。reference_image 会内联 data URL，
             // 不把 PUBLIC_BASE_URL/files/... 交给方舟去拉。
             let image_url = state.storage.public_url(&original_key);
@@ -222,10 +230,10 @@ async fn run_inner(state: &AppState, job_id: Uuid) -> Result<(), Fail> {
                 .map_err(|err| fail_vis("seedream", err))?
         }
         _ => {
-            return Err(Fail {
-                stage: "seedream".into(),
-                message: "这条任务的出稿方式已停用，请重新出稿。本次未扣积分。".into(),
-            });
+            return Err(fail(
+                "seedream",
+                "这条任务的出稿方式已停用，请重新出稿。本次未扣积分。",
+            ));
         }
     };
     let stylized_key = format!("pipeline/{job_id}/seedream.png");
@@ -244,14 +252,9 @@ async fn run_inner(state: &AppState, job_id: Uuid) -> Result<(), Fail> {
         pref,
         brand,
     )
-    .map_err(|err| Fail {
-        stage: "pixel".into(),
-        message: no_charge(err.message().into()),
-    })?;
-    let preview = pixel::render_preview_png(&pattern).map_err(|err| Fail {
-        stage: "pixel".into(),
-        message: no_charge(err.message().into()),
-    })?;
+    .map_err(|err| fail("pixel", no_charge(err.message().into())))?;
+    let preview = pixel::render_preview_png(&pattern)
+        .map_err(|err| fail("pixel", no_charge(err.message().into())))?;
     let preview_key = format!("previews/{job_id}.png");
     put_png(state, &preview_key, &preview, "pixel").await?;
     if !set_key(state, job_id, "preview_key", &preview_key).await? {
@@ -348,15 +351,12 @@ async fn finish(
     }
     let balance = credits::lock_balance(&mut tx, row.user_id)
         .await
-        .map_err(|err| Fail {
-            stage: "pixel".into(),
-            message: no_charge(user_message(err)),
-        })?;
+        .map_err(|err| fail("pixel", no_charge(user_message(err))))?;
     if balance < GENERATE_COST {
-        return Err(Fail {
-            stage: "pixel".into(),
-            message: no_charge(format!("积分不足：需要 {GENERATE_COST}，当前 {balance}")),
-        });
+        return Err(fail(
+            "pixel",
+            no_charge(format!("积分不足：需要 {GENERATE_COST}，当前 {balance}")),
+        ));
     }
 
     sqlx::query(
@@ -408,10 +408,7 @@ async fn finish(
         Some(&row.id.to_string()),
     )
     .await
-    .map_err(|err| Fail {
-        stage: "pixel".into(),
-        message: no_charge(user_message(err)),
-    })?;
+    .map_err(|err| fail("pixel", no_charge(user_message(err))))?;
 
     sqlx::query(
         r#"
@@ -488,10 +485,7 @@ fn sniff(bytes: &[u8]) -> (&'static str, &'static str) {
 async fn read_object(state: &AppState, key: &str, stage: &str) -> Result<Vec<u8>, Fail> {
     match state.storage.get_object(key).await {
         Ok((bytes, _)) => Ok(bytes),
-        Err(err) => Err(Fail {
-            stage: stage.into(),
-            message: no_charge(user_message(err)),
-        }),
+        Err(err) => Err(fail(stage, no_charge(user_message(err)))),
     }
 }
 
@@ -501,10 +495,7 @@ async fn put_png(state: &AppState, key: &str, bytes: &[u8], stage: &str) -> Resu
         .put_object(key, bytes, "image/png")
         .await
         .map(|_| ())
-        .map_err(|err| Fail {
-            stage: stage.into(),
-            message: no_charge(user_message(err)),
-        })
+        .map_err(|err| fail(stage, no_charge(user_message(err))))
 }
 
 async fn advance(
@@ -543,10 +534,7 @@ async fn set_key(state: &AppState, job_id: Uuid, column: &str, key: &str) -> Res
             "UPDATE generation_jobs SET preview_key = $2, updated_at = now() WHERE id = $1 AND status NOT IN ('cancelled', 'failed', 'done')"
         }
         _ => {
-            return Err(Fail {
-                stage: "pixel".into(),
-                message: "出稿失败，请稍后重试。本次未扣积分。".into(),
-            })
+            return Err(fail("pixel", "出稿失败，请稍后重试。本次未扣积分。"));
         }
     };
     let updated = sqlx::query(sql)
@@ -558,8 +546,8 @@ async fn set_key(state: &AppState, job_id: Uuid, column: &str, key: &str) -> Res
     Ok(updated.rows_affected() > 0)
 }
 
-async fn mark_failed(state: &AppState, job_id: Uuid, stage: &str, message: &str) -> AppResult<()> {
-    sqlx::query(
+async fn mark_failed(state: &AppState, job_id: Uuid, fail: Fail) -> AppResult<()> {
+    let updated = sqlx::query(
         r#"
         UPDATE generation_jobs
         SET status = 'failed',
@@ -571,10 +559,28 @@ async fn mark_failed(state: &AppState, job_id: Uuid, stage: &str, message: &str)
         "#,
     )
     .bind(job_id)
-    .bind(stage)
-    .bind(message)
+    .bind(&fail.stage)
+    .bind(&fail.message)
     .execute(&state.db)
     .await?;
+    if updated.rows_affected() == 0 {
+        return Ok(());
+    }
+    let row = load_job(state, job_id).await.ok();
+    let notice = FailureNotice {
+        job_id,
+        stage: fail.stage,
+        user_message: fail.message,
+        upstream: fail.upstream,
+        provider: row
+            .as_ref()
+            .map(|row| row.provider.clone())
+            .unwrap_or_else(|| "unknown".into()),
+        board_size: row.as_ref().map(|row| row.board_size).unwrap_or(0),
+        object_key: row.and_then(|row| row.original_key),
+        at: Utc::now(),
+    };
+    alert::spawn_failure_alert(state.config.clone(), notice);
     Ok(())
 }
 
@@ -768,9 +774,11 @@ fn is_terminal(status: &str) -> bool {
 }
 
 fn fail_vis(stage: &str, err: SeedreamError) -> Fail {
+    let upstream = err.upstream_detail();
     Fail {
         stage: stage.into(),
         message: err.into_message(),
+        upstream,
     }
 }
 
@@ -779,6 +787,7 @@ fn db_fail(stage: &str, err: sqlx::Error) -> Fail {
     Fail {
         stage: stage.into(),
         message: "出稿失败，请稍后重试。本次未扣积分。".into(),
+        upstream: Some("database".into()),
     }
 }
 
@@ -883,5 +892,14 @@ mod tests {
         assert_eq!(stages[2].state, "fail");
         assert_eq!(stages[2].detail, "已取消，未扣积分");
         assert_eq!(stages[0].state, "done");
+    }
+
+    #[test]
+    fn visible_failure_keeps_upstream_off_the_user_message() {
+        let fail = fail_vis("seedream", SeedreamError::Timeout);
+        assert_eq!(fail.stage, "seedream");
+        assert_eq!(fail.upstream.as_deref(), Some("timeout"));
+        assert!(fail.message.contains("未扣积分"));
+        assert!(!fail.message.contains("timeout"));
     }
 }

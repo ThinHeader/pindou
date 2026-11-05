@@ -1,5 +1,6 @@
 //! 业务服务层
 
+pub mod alert;
 pub mod auth;
 pub mod credits;
 pub mod drafts;

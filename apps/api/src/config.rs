@@ -61,6 +61,12 @@ pub struct Config {
     pub wx_virtual_api_base: String,
     /// 客诉退款口令。留空时退款接口关闭。不要写入仓库，也不要发给小程序。
     pub ops_refund_token: String,
+    /// 钉钉群自定义机器人。留空则出稿失败不发告警。链接里含 access_token，不要写入仓库。
+    pub dingtalk_webhook_url: String,
+    /// 机器人关键词。生产环境是 `STRATEGY`，正文必须包含它，否则钉钉拒收。
+    pub dingtalk_keyword: String,
+    /// 可选。只在机器人安全设置为加签时填写。不要写入仓库。
+    pub dingtalk_webhook_secret: String,
 }
 
 impl std::fmt::Debug for Config {
@@ -121,6 +127,15 @@ impl std::fmt::Debug for Config {
             )
             .field("wx_virtual_api_base", &self.wx_virtual_api_base)
             .field("ops_refund_token", &redact_set(&self.ops_refund_token))
+            .field(
+                "dingtalk_webhook_url",
+                &redact_set(&self.dingtalk_webhook_url),
+            )
+            .field("dingtalk_keyword", &self.dingtalk_keyword)
+            .field(
+                "dingtalk_webhook_secret",
+                &redact_set(&self.dingtalk_webhook_secret),
+            )
             .finish()
     }
 }
@@ -187,6 +202,9 @@ impl Config {
                 }
             },
             ops_refund_token: env_trimmed("OPS_REFUND_TOKEN"),
+            dingtalk_webhook_url: env_trimmed("DINGTALK_WEBHOOK_URL"),
+            dingtalk_keyword: env_trimmed("DINGTALK_KEYWORD"),
+            dingtalk_webhook_secret: env_trimmed("DINGTALK_WEBHOOK_SECRET"),
         }
         .load_pay_material()
     }
@@ -248,6 +266,7 @@ impl Config {
     }
 
     /// 集成测试用：丢掉商户参数和虚拟支付参数，强制走开发示意充值，避免打到真微信。
+    /// 同时丢掉钉钉机器人配置，避免本机 `.env` 在测试失败时打到生产群。
     pub fn force_mock_pay(&mut self) {
         self.wechat_mch_id.clear();
         self.wechat_mch_serial_no.clear();
@@ -268,6 +287,9 @@ impl Config {
         self.wx_virtual_product_large.clear();
         self.wx_virtual_msg_token.clear();
         self.wx_virtual_api_base = "https://api.weixin.qq.com".into();
+        self.dingtalk_webhook_url.clear();
+        self.dingtalk_keyword.clear();
+        self.dingtalk_webhook_secret.clear();
     }
 
     fn load_pay_material(mut self) -> Self {
