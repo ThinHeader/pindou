@@ -36,6 +36,9 @@ function openDraft(id: string) {
 function goCreate() {
   uni.switchTab({ url: '/pages/create/index' })
 }
+function goEdit() {
+  uni.switchTab({ url: '/pages/edit/index' })
+}
 
 </script>
 
@@ -71,6 +74,7 @@ function goCreate() {
     <view class="menu">
       <view class="item" @click="goCredits">充值积分<text class="arrow">›</text></view>
       <view class="item" @click="goCredits">积分明细<text class="arrow">›</text></view>
+      <view class="item" @click="goEdit()">改稿<text class="arrow">›</text></view>
       <view class="item" @click="goLibrary('mine')">我的稿件<text class="arrow">›</text></view>
       <view class="item" @click="goLibrary('favorite')">我的收藏<text class="arrow">›</text></view>
       <view class="item" @click="showTip('豆色库存即将开放')">我的豆色库存<text class="arrow">›</text></view>

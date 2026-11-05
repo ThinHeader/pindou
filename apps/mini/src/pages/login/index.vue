@@ -93,7 +93,7 @@ function decline() {
 }
 
 function browse() {
-  uni.switchTab({ url: '/pages/tutorials/index' })
+  uni.navigateTo({ url: '/pages/tutorials/index' })
 }
 function showLegal() {
   uni.showToast({ title: '协议页即将开放', icon: 'none' })

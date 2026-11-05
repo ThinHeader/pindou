@@ -8,9 +8,10 @@
       }
     },
     {
-      "path": "pages/tutorials/index",
+      "path": "pages/edit/index",
       "style": {
-        "navigationBarTitleText": "教程"
+        "navigationBarTitleText": "改稿",
+        "navigationBarBackgroundColor": "#FFF5F3"
       }
     },
     {
@@ -29,6 +30,20 @@
       "path": "pages/mine/index",
       "style": {
         "navigationBarTitleText": "我的"
+      }
+    },
+    {
+      "path": "pages/edit/board",
+      "style": {
+        "navigationBarTitleText": "改稿",
+        "navigationBarBackgroundColor": "#FFF5F3",
+        "disableScroll": true
+      }
+    },
+    {
+      "path": "pages/tutorials/index",
+      "style": {
+        "navigationBarTitleText": "教程"
       }
     },
     {
@@ -89,8 +104,8 @@
         "selectedIconPath": "static/tab-home-active.png"
       },
       {
-        "pagePath": "pages/tutorials/index",
-        "text": "教程",
+        "pagePath": "pages/edit/index",
+        "text": "改稿",
         "iconPath": "static/tab-tutorial.png",
         "selectedIconPath": "static/tab-tutorial-active.png"
       },

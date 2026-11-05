@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -51,6 +51,14 @@ pub struct RenameRequest {
     pub title: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PatternRequest {
+    pub cells_b64: String,
+    #[serde(default)]
+    pub save_as: bool,
+    pub title: Option<String>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/drafts/generate", post(generate))
@@ -61,6 +69,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/drafts/{id}/favorite", post(favorite))
         .route("/drafts/{id}/publish", post(publish))
+        .route(
+            "/drafts/{id}/pattern",
+            put(update_pattern).patch(update_pattern),
+        )
 }
 
 async fn generate(
@@ -135,6 +147,25 @@ async fn delete_draft(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<drafts::DeleteOutput>> {
     Ok(Json(drafts::delete_owned(&state, auth.user_id, id).await?))
+}
+
+async fn update_pattern(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PatternRequest>,
+) -> AppResult<Json<drafts::DraftDetail>> {
+    Ok(Json(
+        drafts::update_pattern(
+            &state,
+            auth.user_id,
+            id,
+            &body.cells_b64,
+            body.save_as,
+            body.title.as_deref(),
+        )
+        .await?,
+    ))
 }
 
 async fn favorite(
