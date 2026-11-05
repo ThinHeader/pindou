@@ -316,7 +316,7 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
 
 完成后 `charged` 为 true，`balance` 是扣分后的余额，`draft` 是稿件详情。`original_url` / `cartoon_url` / `preview_url` 指向对象存储里的原图、Seedream 中间图和珠图。`cartoon_url` 这个字段名是旧列，内容是 Seedream（或开发模拟）的平涂图，不是人物动漫化。`matted_url` 新任务为 null。
 
-失败时 HTTP 仍是 200，`status` 为 `failed`，`error` 说明原因，并写明本次未扣积分。`failed_stage` 会反映在对应步骤的 `state: "fail"` 上。
+失败时 HTTP 仍是 200，`status` 为 `failed`，`error` 说明原因，并写明本次未扣积分。`failed_stage` 会反映在对应步骤的 `state: "fail"` 上。用户看到的文案不带上游原文。配了 `DINGTALK_WEBHOOK_URL` 时，服务会另给钉钉群机器人发一条运营告警（正文含 `DINGTALK_KEYWORD`，生产为 `STRATEGY`，以及任务 id、阶段和上游错误摘要）。没配 webhook 则不发送。
 
 ### `POST /api/v1/jobs/{id}/cancel`
 
@@ -324,7 +324,7 @@ curl -X POST "http://127.0.0.1:3000/api/v1/ops/credit-orders/订单UUID或商户
 
 珠图算法：把 Seedream 中间图最近邻缩放到用户选择的珠板（52、78 或 104），映射到内置拼豆色板（含 A1 / B3 / C2 / D1 / K9 等），再把超出色数上限的小色块并进最近色。不用扩散模型产生官方珠图。预览是一颗颗珠子的 PNG。
 
-稿件详情额外字段：`pipeline`（`mvp_plus`；旧的官方模板是 `pixel`）、`provider`（`mock` | `seedream`；更早的稿可能是 `aliyun` 或 `local`）、`remove_bg`、`cartoon_strength`、`subject_type`、`palette_brand`、`pipeline_tags`、`pipeline_lines`、`original_url`、`matted_url`、`cartoon_url`、`source_key`。新稿的 `remove_bg` 为 false，`cartoon_strength` 为 `off`。列表卡片带 `pipeline_tags`，官方模板为空数组。展示用的标签和说明不写供应商或模型名，例如「色块整理」「本地色块」「拼豆色号」「最近邻色号」。失败文案同样不回传上游原文。
+稿件详情额外字段：`pipeline`（`mvp_plus`；旧的官方模板是 `pixel`）、`provider`（`mock` | `seedream`；更早的稿可能是 `aliyun` 或 `local`）、`remove_bg`、`cartoon_strength`、`subject_type`、`palette_brand`、`pipeline_tags`、`pipeline_lines`、`original_url`、`matted_url`、`cartoon_url`、`source_key`。新稿的 `remove_bg` 为 false，`cartoon_strength` 为 `off`。列表卡片带 `pipeline_tags`，官方模板为空数组。展示用的标签和说明不写供应商或模型名，例如「色块整理」「本地色块」「拼豆色号」「最近邻色号」。失败文案同样不回传上游原文；运营告警走钉钉群机器人，见上面的环境变量。
 
 ## 稿件库
 

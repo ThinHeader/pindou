@@ -130,6 +130,9 @@ MVP+ 出稿默认「上传 → 火山方舟 Seedream 5.0 Flash 图生图 → 自
 | `ARK_MODEL` | 可选，默认 `doubao-seedream-5-0-flash-260915`（Seedream 5.0 Flash） |
 | `PIPELINE_PROVIDER` | `auto`（有方舟密钥用 Seedream，否则模拟）/ `mock` / `seedream` / `ark` |
 | `PUBLIC_BASE_URL` | 预览图、头像等对象的公网地址。Seedream 参考图不使用这个 URL，请求里内联 data URL |
+| `DINGTALK_WEBHOOK_URL` | 可选。钉钉群自定义机器人 Webhook（`https://oapi.dingtalk.com/robot/send?access_token=…`）。留空则出稿失败不发告警。不要把带 token 的真实链接写进仓库 |
+| `DINGTALK_KEYWORD` | 机器人关键词。生产填 `STRATEGY`，正文必须包含它，否则钉钉拒收 |
+| `DINGTALK_WEBHOOK_SECRET` | 可选。只在机器人安全设置选了加签时填写。关键词模式留空 |
 
 这是方舟 OpenAPI `POST /api/v3/images/generations`（图生图），不是阿里云视觉智能，也不是 SeedEdit VIAPI。`ALIYUN_ACCESS_KEY_ID` / `ALIYUN_ACCESS_KEY_SECRET` 不能用于这条管线。`PIPELINE_PROVIDER=aliyun` 会直接 400。
 
@@ -138,6 +141,8 @@ Flash 大约 ¥0.12 / 张（约数）。MVP 只用 Flash，没有更高档的「
 `PIPELINE_PROVIDER=seedream` 或 `ark` 但没配 `ARK_API_KEY` 时，出稿接口直接返回 400，不会扣积分。
 
 积分：整次成功才扣 1 分，写在落稿的同一个事务里。中间任何一步失败或用户取消，都不扣，因此也没有退款流水。
+
+出稿失败且任务被标成 `failed` 后，如果配了 `DINGTALK_WEBHOOK_URL`，会异步给钉钉群机器人发一条 markdown。正文含 `DINGTALK_KEYWORD`（生产是 `STRATEGY`）、任务 id、阶段、用户看到的文案、上游错误摘要（例如 Seedream 的 code 和截断原因）、provider、珠板和时间（Asia/Shanghai）。原图只留对象 key，不带方舟密钥、用户 JWT 或 webhook token。告警发送失败只打 WARN，不影响出稿。未配置 webhook 则不发请求。
 
 ## 3. 测试
 
@@ -148,7 +153,7 @@ cd apps/api
 cargo test
 ```
 
-覆盖：开发态登录、激励广告每日一次、每日免费领取接口已移除、坏图不扣分、MVP+ 模拟管线（Seedream 风格的透明平涂中间图 / 最近邻色号，成功才扣 1 分）、52 / 78 / 104 都按所选珠板出格、没配方舟密钥时 `seedream` / `ark` / `aliyun` 返回 400 且不扣分、改名删除、作品发布与广场互动返回 410、开发示意充值只入账一次、微信支付验签回调幂等、虚拟支付签名与查单入账、客诉退款口令与扣回积分、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数、虚拟支付参数和方舟密钥，避免测试打到真微信或真方舟。支付用例使用本机假微信和测试密钥。
+覆盖：开发态登录、激励广告每日一次、每日免费领取接口已移除、坏图不扣分、MVP+ 模拟管线（Seedream 风格的透明平涂中间图 / 最近邻色号，成功才扣 1 分）、52 / 78 / 104 都按所选珠板出格、没配方舟密钥时 `seedream` / `ark` / `aliyun` 返回 400 且不扣分、改名删除、作品发布与广场互动返回 410、开发示意充值只入账一次、微信支付验签回调幂等、虚拟支付签名与查单入账、客诉退款口令与扣回积分、坏签名和未支付不加积分、余额不足 402。主流程强制 `PIPELINE_PROVIDER=mock`，并清掉商户参数、虚拟支付参数、方舟密钥和钉钉机器人配置，避免测试打到真微信、真方舟或生产告警群。支付用例使用本机假微信和测试密钥。
 
 ## 4. 小程序
 
