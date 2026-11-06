@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { onLoad } from '@dcloudio/uni-app'
+import { onCopyUrl, onLoad, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { tutorialById, type Tutorial } from '../../data/tutorials'
 import { useCreateStore } from '../../stores/create'
+import { SHARE_PAGES, shareTitle, withQuery } from '../../utils/share'
+import { usePageShare } from '../../utils/use-share'
 
 const create = useCreateStore()
 const item = ref<Tutorial | null>(null)
+
+usePageShare(onShareAppMessage, onShareTimeline, onCopyUrl, () => ({
+  title: shareTitle(item.value?.title),
+  path: item.value ? withQuery(SHARE_PAGES.tutorialDetail, { id: item.value.id }) : SHARE_PAGES.tutorials,
+}))
 
 onLoad((query) => {
   item.value = tutorialById(String(query?.id || '')) ?? null

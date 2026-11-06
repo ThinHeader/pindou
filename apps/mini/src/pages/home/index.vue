@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app'
+import { onCopyUrl, onShareAppMessage, onShareTimeline, onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import CreditEmptySheet from '../../components/CreditEmptySheet.vue'
 import CreditPill from '../../components/CreditPill.vue'
@@ -8,7 +8,11 @@ import type { DraftCard } from '../../api/types'
 import { tutorials } from '../../data/tutorials'
 import { useCreditsStore } from '../../stores/credits'
 import { useUserStore } from '../../stores/user'
+import { SHARE_PAGES } from '../../utils/share'
 import { boardLabel } from '../../utils/ui'
+import { usePageShare } from '../../utils/use-share'
+
+usePageShare(onShareAppMessage, onShareTimeline, onCopyUrl, { path: SHARE_PAGES.home })
 
 const credits = useCreditsStore()
 const user = useUserStore()
