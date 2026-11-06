@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app'
+import { onCopyUrl, onShareAppMessage, onShareTimeline, onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import { draftsApi, errorOf } from '../../api/http'
 import { readableError } from '../../api/payload'
 import type { DraftCard } from '../../api/types'
 import { useUserStore } from '../../stores/user'
+import { SHARE_PAGES } from '../../utils/share'
 import { boardLabel, ensureLogin, showError, showTip } from '../../utils/ui'
+import { usePageShare } from '../../utils/use-share'
 import { canRevise } from '../../utils/pattern'
+
+usePageShare(onShareAppMessage, onShareTimeline, onCopyUrl, { path: SHARE_PAGES.edit })
 
 const user = useUserStore()
 const pills = [

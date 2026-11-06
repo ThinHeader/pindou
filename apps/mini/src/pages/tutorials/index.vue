@@ -1,5 +1,10 @@
 <script setup lang="ts">
+import { onCopyUrl, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app'
 import { tutorials } from '../../data/tutorials'
+import { SHARE_PAGES } from '../../utils/share'
+import { usePageShare } from '../../utils/use-share'
+
+usePageShare(onShareAppMessage, onShareTimeline, onCopyUrl, { path: SHARE_PAGES.tutorials })
 
 function openTutorial(id: string) {
   uni.navigateTo({ url: `/pages/tutorials/detail?id=${id}` })

@@ -1,15 +1,23 @@
 <script setup lang="ts">
-import { onLoad } from '@dcloudio/uni-app'
+import { onCopyUrl, onLoad, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import PaletteLegend from '../../components/PaletteLegend.vue'
 import { draftsApi } from '../../api/http'
 import type { DraftDetail } from '../../api/types'
 import { useCreateStore } from '../../stores/create'
+import { SHARE_PAGES, shareTitle, withQuery } from '../../utils/share'
 import { askConfirm, askText, boardLabel, checkedDraftTitle, ensureLogin, showError, showTip, timeAgo } from '../../utils/ui'
+import { usePageShare } from '../../utils/use-share'
 
 const create = useCreateStore()
 
 const draft = ref<DraftDetail | null>(null)
+
+usePageShare(onShareAppMessage, onShareTimeline, onCopyUrl, () => ({
+  title: shareTitle(draft.value?.title),
+  path: draft.value?.id ? withQuery(SHARE_PAGES.draftDetail, { id: draft.value.id }) : undefined,
+}))
+
 const crafting = ref(false)
 const step = ref(0)
 

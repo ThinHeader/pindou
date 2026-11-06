@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app'
+import { onCopyUrl, onShareAppMessage, onShareTimeline, onShow } from '@dcloudio/uni-app'
 import { useCreditsStore } from '../../stores/credits'
 import { useLibraryStore } from '../../stores/library'
 import { useUserStore } from '../../stores/user'
+import { SHARE_PAGES } from '../../utils/share'
 import { ensureLogin, initialOf, showError, showTip } from '../../utils/ui'
+import { usePageShare } from '../../utils/use-share'
+
+usePageShare(onShareAppMessage, onShareTimeline, onCopyUrl, { path: SHARE_PAGES.mine })
 
 const user = useUserStore()
 const credits = useCreditsStore()

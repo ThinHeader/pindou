@@ -1,14 +1,22 @@
 <script setup lang="ts">
-import { onLoad } from '@dcloudio/uni-app'
+import { onCopyUrl, onLoad, onShareAppMessage, onShareTimeline } from '@dcloudio/uni-app'
 import { computed, ref } from 'vue'
 import PaletteLegend from '../../components/PaletteLegend.vue'
 import { draftsApi } from '../../api/http'
 import type { DraftDetail } from '../../api/types'
 import { useCreateStore } from '../../stores/create'
+import { SHARE_PAGES, shareTitle, withQuery } from '../../utils/share'
 import { boardLabel, showError, showTip } from '../../utils/ui'
+import { usePageShare } from '../../utils/use-share'
 
 const create = useCreateStore()
 const draft = ref<DraftDetail | null>(create.lastDraft)
+
+usePageShare(onShareAppMessage, onShareTimeline, onCopyUrl, () => ({
+  title: shareTitle(draft.value?.title),
+  path: draft.value?.id ? withQuery(SHARE_PAGES.preview, { id: draft.value.id }) : undefined,
+}))
+
 const tab = ref<'orig' | 'flat' | 'bead'>('bead')
 
 const tabs = [
