@@ -3,7 +3,7 @@
     {
       "path": "pages/home/index",
       "style": {
-        "navigationBarTitleText": "拼豆",
+        "navigationBarTitleText": "拼豆手账工坊",
         "navigationBarBackgroundColor": "#FFF5F3"
       }
     },
@@ -131,7 +131,7 @@
   },
   "globalStyle": {
     "navigationBarTextStyle": "black",
-    "navigationBarTitleText": "拼豆",
+    "navigationBarTitleText": "拼豆手账工坊",
     "navigationBarBackgroundColor": "#F7F3F0",
     "backgroundColor": "#F7F3F0"
   }
