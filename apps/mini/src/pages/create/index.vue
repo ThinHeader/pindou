@@ -8,6 +8,7 @@ import type { DraftCard } from '../../api/types'
 import { useCreateStore } from '../../stores/create'
 import { useCreditsStore } from '../../stores/credits'
 import { useUserStore } from '../../stores/user'
+import { choosePhoto } from '../../utils/photo'
 import { SHARE_PAGES } from '../../utils/share'
 import { ensureLogin, showError } from '../../utils/ui'
 import { usePageShare } from '../../utils/use-share'
@@ -18,6 +19,7 @@ const credits = useCreditsStore()
 const user = useUserStore()
 const create = useCreateStore()
 const recent = ref<DraftCard[]>([])
+const picking = ref(false)
 
 onShow(async () => {
   if (!user.isLoggedIn) {
@@ -37,35 +39,40 @@ function prepareTitle() {
   create.title = create.referenceTitle.trim()
 }
 
-function pick(source: 'camera' | 'album') {
+async function pick(source: 'camera' | 'album') {
+  if (picking.value) return
   if (!ensureLogin()) return
+  // 积分可能还没拉到（进页面时刷新失败），再补一次，避免误判「没积分」而没反应。
+  if (!credits.canGenerate) await credits.refresh()
   if (!credits.canGenerate) {
     credits.openEmptySheet()
     return
   }
   prepareTitle()
-  uni.chooseImage({
-    count: 1,
-    sizeType: ['compressed'],
-    sourceType: [source],
-    success: async (res) => {
-      const path = res.tempFilePaths[0]
-      const name = path.split('/').pop() || '参考图'
-      uni.showLoading({ title: '上传中' })
-      try {
-        await create.attachLocal(path, name)
-        uni.navigateTo({ url: '/pages/create/params' })
-      } catch (e) {
-        showError(e, '读取图片失败')
-      } finally {
-        uni.hideLoading()
-      }
-    },
-  })
+  picking.value = true
+  try {
+    const photo = await choosePhoto(source)
+    if (!photo) return
+    uni.showLoading({ title: '上传中', mask: true })
+    try {
+      await create.attachLocal(photo.path, photo.name)
+    } finally {
+      uni.hideLoading()
+    }
+    uni.navigateTo({
+      url: '/pages/create/params',
+      fail: () => showError({ message: '页面打开失败，请返回重试' }, '页面打开失败'),
+    })
+  } catch (e) {
+    showError(e, '读取图片失败')
+  } finally {
+    picking.value = false
+  }
 }
 
-function useSample() {
+async function useSample() {
   if (!ensureLogin()) return
+  if (!credits.canGenerate) await credits.refresh()
   if (!credits.canGenerate) {
     credits.openEmptySheet()
     return
