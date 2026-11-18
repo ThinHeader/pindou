@@ -4,7 +4,8 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
-use sqlx::PgPool;
+use sqlx::types::Json;
+use sqlx::{Connection, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
@@ -95,21 +96,21 @@ pub async fn list(
                u.nickname AS author_nickname,
                EXISTS(
                  SELECT 1 FROM draft_favorites f
-                 WHERE f.draft_id = d.id AND f.user_id = $1
+                 WHERE f.draft_id = d.id AND f.user_id = ?1
                ) AS favorited
         FROM drafts d
         JOIN users u ON u.id = d.user_id
         WHERE (
-            ($2 = 'mine' AND d.user_id = $1 AND d.is_official = FALSE)
-            OR ($2 = 'favorite' AND EXISTS(
+            (?2 = 'mine' AND d.user_id = ?1 AND d.is_official = FALSE)
+            OR (?2 = 'favorite' AND EXISTS(
                 SELECT 1 FROM draft_favorites f
-                WHERE f.draft_id = d.id AND f.user_id = $1
+                WHERE f.draft_id = d.id AND f.user_id = ?1
             ))
-            OR ($2 = 'template' AND d.is_template = TRUE)
-            OR ($2 = 'official' AND d.is_official = TRUE)
-            OR ($2 = 'all' AND (d.user_id = $1 OR d.is_official = TRUE))
+            OR (?2 = 'template' AND d.is_template = TRUE)
+            OR (?2 = 'official' AND d.is_official = TRUE)
+            OR (?2 = 'all' AND (d.user_id = ?1 OR d.is_official = TRUE))
         )
-        AND ($3 = '' OR d.title ILIKE $3)
+        AND (?3 = '' OR d.title LIKE ?3)
         ORDER BY d.created_at DESC
         LIMIT 60
         "#,
@@ -137,12 +138,12 @@ pub async fn get_detail(state: &AppState, user_id: Uuid, draft_id: Uuid) -> AppR
                u.nickname AS author_nickname,
                EXISTS(
                  SELECT 1 FROM draft_favorites f
-                 WHERE f.draft_id = d.id AND f.user_id = $2
+                 WHERE f.draft_id = d.id AND f.user_id = ?2
                ) AS favorited,
                (SELECT w.id FROM works w WHERE w.draft_id = d.id LIMIT 1) AS work_id
         FROM drafts d
         JOIN users u ON u.id = d.user_id
-        WHERE d.id = $1
+        WHERE d.id = ?1
         "#,
     )
     .bind(draft_id)
@@ -158,12 +159,12 @@ pub async fn get_detail(state: &AppState, user_id: Uuid, draft_id: Uuid) -> AppR
     Ok(detail_from_row(state, user_id, &row))
 }
 
-pub async fn toggle_favorite(pool: &PgPool, user_id: Uuid, draft_id: Uuid) -> AppResult<bool> {
+pub async fn toggle_favorite(pool: &SqlitePool, user_id: Uuid, draft_id: Uuid) -> AppResult<bool> {
     let exists: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS(
             SELECT 1 FROM drafts d
-            WHERE d.id = $1 AND (d.user_id = $2 OR d.is_official OR d.is_template)
+            WHERE d.id = ?1 AND (d.user_id = ?2 OR d.is_official OR d.is_template)
         )
         "#,
     )
@@ -176,7 +177,7 @@ pub async fn toggle_favorite(pool: &PgPool, user_id: Uuid, draft_id: Uuid) -> Ap
     }
 
     let inserted = sqlx::query(
-        "INSERT INTO draft_favorites (user_id, draft_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "INSERT INTO draft_favorites (user_id, draft_id) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
     )
     .bind(user_id)
     .bind(draft_id)
@@ -185,7 +186,7 @@ pub async fn toggle_favorite(pool: &PgPool, user_id: Uuid, draft_id: Uuid) -> Ap
     if inserted.rows_affected() > 0 {
         return Ok(true);
     }
-    sqlx::query("DELETE FROM draft_favorites WHERE user_id = $1 AND draft_id = $2")
+    sqlx::query("DELETE FROM draft_favorites WHERE user_id = ?1 AND draft_id = ?2")
         .bind(user_id)
         .bind(draft_id)
         .execute(pool)
@@ -213,7 +214,7 @@ pub async fn rename(
 ) -> AppResult<DraftDetail> {
     let title = normalize_title(title)?;
     gate_owner(&state.db, user_id, draft_id, "修改").await?;
-    let updated = sqlx::query("UPDATE drafts SET title = $3 WHERE id = $1 AND user_id = $2")
+    let updated = sqlx::query("UPDATE drafts SET title = ?3 WHERE id = ?1 AND user_id = ?2")
         .bind(draft_id)
         .bind(user_id)
         .bind(&title)
@@ -244,7 +245,7 @@ pub async fn update_pattern(
                pipeline, provider, remove_bg, cartoon_strength, subject_type,
                palette_brand, matted_key, cartoon_key, pipeline_tags
         FROM drafts
-        WHERE id = $1
+        WHERE id = ?1
         "#,
     )
     .bind(draft_id)
@@ -259,7 +260,7 @@ pub async fn update_pattern(
     };
     let cells = decode_cells(cells_b64)?;
     let (palette, color_count, peg_count, pattern) =
-        prepare_pattern(&row.palette, &cells, row.board_size)?;
+        prepare_pattern(&row.palette.0, &cells, row.board_size)?;
     let png = pixel::render_preview_png(&pattern)?;
     let target_id = if save_as { Uuid::new_v4() } else { draft_id };
     let preview_key = format!("previews/edit/{target_id}/{}.png", Uuid::new_v4());
@@ -315,20 +316,20 @@ async fn overwrite_pattern(
     let updated = sqlx::query(
         r#"
         UPDATE drafts
-        SET palette = $3,
-            cells = $4,
-            color_count = $5,
-            peg_count = $6,
-            preview_key = $7
-        WHERE id = $1
-          AND user_id = $2
+        SET palette = ?3,
+            cells = ?4,
+            color_count = ?5,
+            peg_count = ?6,
+            preview_key = ?7
+        WHERE id = ?1
+          AND user_id = ?2
           AND is_official = FALSE
           AND is_template = FALSE
         "#,
     )
     .bind(draft_id)
     .bind(user_id)
-    .bind(palette)
+    .bind(Json(palette.clone()))
     .bind(cells)
     .bind(color_count)
     .bind(peg_count)
@@ -363,10 +364,10 @@ async fn insert_pattern_copy(
             palette_brand, matted_key, cartoon_key, pipeline_tags
         )
         VALUES (
-            $1,$2,$3,$4,$5,$6,
-            $7,$8,$9,$10,$11,
+            ?1,?2,?3,?4,?5,?6,
+            ?7,?8,?9,?10,?11,
             FALSE, FALSE,
-            $12,$13,$14,$15,$16,$17,$18,$19,$20
+            ?12,?13,?14,?15,?16,?17,?18,?19,?20
         )
         "#,
     )
@@ -376,7 +377,7 @@ async fn insert_pattern_copy(
     .bind(row.board_size)
     .bind(color_count)
     .bind(peg_count)
-    .bind(palette)
+    .bind(Json(palette.clone()))
     .bind(cells)
     .bind(preview_key)
     .bind(&row.source_key)
@@ -389,7 +390,7 @@ async fn insert_pattern_copy(
     .bind(&row.palette_brand)
     .bind(&row.matted_key)
     .bind(&row.cartoon_key)
-    .bind(&row.pipeline_tags)
+    .bind(Json(row.pipeline_tags.0.clone()))
     .execute(&state.db)
     .await?;
     Ok(())
@@ -531,12 +532,13 @@ pub async fn delete_owned(
     draft_id: Uuid,
 ) -> AppResult<DeleteOutput> {
     let row = gate_owner(&state.db, user_id, draft_id, "删除").await?;
-    let mut tx = state.db.begin().await?;
-    let works = sqlx::query("DELETE FROM works WHERE draft_id = $1")
+    let mut conn = state.db.acquire().await?;
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
+    let works = sqlx::query("DELETE FROM works WHERE draft_id = ?1")
         .bind(draft_id)
         .execute(&mut *tx)
         .await?;
-    let gone = sqlx::query("DELETE FROM drafts WHERE id = $1 AND user_id = $2")
+    let gone = sqlx::query("DELETE FROM drafts WHERE id = ?1 AND user_id = ?2")
         .bind(draft_id)
         .bind(user_id)
         .execute(&mut *tx)
@@ -564,7 +566,7 @@ pub async fn delete_owned(
 }
 
 async fn gate_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     user_id: Uuid,
     draft_id: Uuid,
     verb: &str,
@@ -572,7 +574,7 @@ async fn gate_owner(
     let row = sqlx::query_as::<_, DraftGateRow>(
         r#"
         SELECT user_id, is_official, is_template, preview_key, matted_key, cartoon_key, source_key
-        FROM drafts WHERE id = $1
+        FROM drafts WHERE id = ?1
         "#,
     )
     .bind(draft_id)
@@ -725,7 +727,7 @@ fn card_from_row(state: &AppState, viewer: Uuid, row: &DraftListRow) -> DraftCar
 }
 
 fn detail_from_row(state: &AppState, viewer: Uuid, row: &DraftDetailRow) -> DraftDetail {
-    let palette = palette_from_json(&row.palette);
+    let palette = palette_from_json(&row.palette.0);
     let top = palette.first().map(|p| p.code.as_str()).unwrap_or("主色");
     let minutes = (row.peg_count / 45).clamp(20, 180);
     DraftDetail {
@@ -789,7 +791,7 @@ fn detail_from_row(state: &AppState, viewer: Uuid, row: &DraftDetailRow) -> Draf
 struct PatternRow {
     title: String,
     board_size: i32,
-    palette: serde_json::Value,
+    palette: Json<serde_json::Value>,
     source_key: Option<String>,
     palette_pref: String,
     pipeline: String,
@@ -800,7 +802,7 @@ struct PatternRow {
     palette_brand: String,
     matted_key: Option<String>,
     cartoon_key: Option<String>,
-    pipeline_tags: serde_json::Value,
+    pipeline_tags: Json<serde_json::Value>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -841,7 +843,7 @@ struct DraftDetailRow {
     board_size: i32,
     color_count: i32,
     peg_count: i32,
-    palette: serde_json::Value,
+    palette: Json<serde_json::Value>,
     cells: Vec<u8>,
     preview_key: String,
     palette_pref: String,

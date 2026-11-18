@@ -1,6 +1,7 @@
 //! 拼豆 API。
 //!
-//! 启动时连接 PostgreSQL 并执行 SQL migration。不再写入官方预置稿。
+//! 启动时打开本地 SQLite（默认 `./data/pindou.db`）并执行 SQL migration。
+//! 不再写入官方预置稿。
 
 mod config;
 mod error;
@@ -9,13 +10,16 @@ mod routes;
 mod services;
 mod state;
 
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use axum::extract::DefaultBodyLimit;
 use axum::Router;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -27,24 +31,37 @@ pub use services::session_seal::seal_session_key_for_tests;
 pub use services::wechat_pay::seal_aead_for_tests;
 pub use state::AppState;
 
-/// 连接依赖并执行 migration。
+/// 打开 SQLite 并执行 migration。
+///
+/// 单机单文件：WAL 让读写不互相阻塞，`busy_timeout` 兜住偶发争用，
+/// 写事务由各业务显式 `BEGIN IMMEDIATE` 串行化（取代 Postgres 的 `FOR UPDATE`）。
 pub async fn connect(config: &Config) -> anyhow::Result<AppState> {
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .acquire_timeout(Duration::from_secs(8))
-        .connect(&config.database_url)
+    let sqlite = SqliteConnectOptions::from_str(&config.database_url)
+        .with_context(|| format!("SQLite 连接串无效（{}）", config.database_url))?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(10))
+        .foreign_keys(true);
+
+    let db_path = sqlite.get_filename().display().to_string();
+    if let Some(parent) = std::path::Path::new(&db_path).parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建 SQLite 目录失败（{}）", parent.display()))?;
+    }
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect_with(sqlite)
         .await
-        .with_context(|| {
-            format!(
-                "连接 PostgreSQL 失败（{}）",
-                redact_db(&config.database_url)
-            )
-        })?;
+        .with_context(|| format!("打开 SQLite 失败（{}）", redact_db(&config.database_url)))?;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
         .context("执行 SQL migration 失败")?;
+
 
     let storage = Arc::new(
         services::storage::LocalStorage::new(&config.storage_dir, &config.public_base_url)
@@ -91,17 +108,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 本地 SQLite 没有账号密码，连接串本身可以直接进日志；只做脱敏兜底。
 fn redact_db(url: &str) -> String {
-    // 避免日志带出密码：postgres://user:pass@host/db → postgres://user:***@host/db
-    if let Some(scheme_end) = url.find("://") {
-        let rest = &url[scheme_end + 3..];
-        if let Some(at) = rest.find('@') {
-            let auth = &rest[..at];
-            if let Some(colon) = auth.find(':') {
-                let user = &auth[..colon];
-                return format!("{}{}:***@{}", &url[..scheme_end + 3], user, &rest[at + 1..]);
-            }
-        }
-    }
-    "postgres://***".into()
+    url.to_string()
 }

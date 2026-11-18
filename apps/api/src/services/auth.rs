@@ -9,7 +9,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -74,7 +74,7 @@ pub fn verify_token(secret: &str, token: &str) -> AppResult<Uuid> {
         .map_err(|_| AppError::Unauthorized("登录已失效，请重新登录".into()))
 }
 
-pub async fn login_with_code(config: &Config, pool: &PgPool, code: &str) -> AppResult<UserRecord> {
+pub async fn login_with_code(config: &Config, pool: &SqlitePool, code: &str) -> AppResult<UserRecord> {
     let resolved = resolve_login(config, code).await?;
     let sealed = match resolved.session_key.as_deref() {
         Some(key) if !key.is_empty() => {
@@ -160,17 +160,17 @@ pub fn mock_openid(code: &str) -> String {
 }
 
 pub async fn upsert_user(
-    pool: &PgPool,
+    pool: &SqlitePool,
     openid: &str,
     session_key_enc: Option<&str>,
 ) -> AppResult<UserRecord> {
     let row = sqlx::query_as::<_, UserRow>(
         r#"
         INSERT INTO users (openid, nickname, wx_session_key_enc)
-        VALUES ($1, '拼豆玩家', $2)
+        VALUES (?1, '拼豆玩家', ?2)
         ON CONFLICT (openid) DO UPDATE
-        SET updated_at = now(),
-            wx_session_key_enc = COALESCE($2, users.wx_session_key_enc)
+        SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+            wx_session_key_enc = COALESCE(?2, users.wx_session_key_enc)
         RETURNING id, openid, nickname, avatar_url
         "#,
     )
@@ -182,7 +182,7 @@ pub async fn upsert_user(
     sqlx::query(
         r#"
         INSERT INTO credit_accounts (user_id, balance)
-        VALUES ($1, 0)
+        VALUES (?1, 0)
         ON CONFLICT (user_id) DO NOTHING
         "#,
     )
@@ -212,7 +212,7 @@ pub fn avatar_public_url(storage: &crate::services::storage::LocalStorage, store
 
 /// 登录页提交的头像和昵称。两者至少有一项。头像键由本服务写入对象存储后传入。
 pub async fn save_display(
-    pool: &PgPool,
+    pool: &SqlitePool,
     user_id: Uuid,
     nickname: Option<&str>,
     avatar_key: Option<&str>,
@@ -228,10 +228,10 @@ pub async fn save_display(
     let row = sqlx::query_as::<_, UserRow>(
         r#"
         UPDATE users
-        SET nickname = COALESCE($2, nickname),
-            avatar_url = COALESCE($3, avatar_url),
-            updated_at = now()
-        WHERE id = $1
+        SET nickname = COALESCE(?2, nickname),
+            avatar_url = COALESCE(?3, avatar_url),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        WHERE id = ?1
         RETURNING id, openid, nickname, avatar_url
         "#,
     )
@@ -244,9 +244,9 @@ pub async fn save_display(
     Ok(row.into())
 }
 
-pub async fn get_user(pool: &PgPool, user_id: Uuid) -> AppResult<UserRecord> {
+pub async fn get_user(pool: &SqlitePool, user_id: Uuid) -> AppResult<UserRecord> {
     let row = sqlx::query_as::<_, UserRow>(
-        "SELECT id, openid, nickname, avatar_url FROM users WHERE id = $1",
+        "SELECT id, openid, nickname, avatar_url FROM users WHERE id = ?1",
     )
     .bind(user_id)
     .fetch_optional(pool)

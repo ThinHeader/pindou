@@ -9,6 +9,8 @@
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::json;
+use sqlx::types::Json;
+use sqlx::Connection;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
@@ -135,7 +137,7 @@ pub async fn enqueue(state: &AppState, user_id: Uuid, input: GenerateInput) -> A
             board_size, color_count, palette_pref, remove_bg, cartoon_strength,
             subject_type, palette_brand, title, provider, original_key
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
         "#,
     )
     .bind(job_id)
@@ -187,8 +189,8 @@ pub async fn cancel(state: &AppState, user_id: Uuid, job_id: Uuid) -> AppResult<
             failed_stage = status,
             message = '已取消，未扣积分',
             error_message = '已取消，未扣积分',
-            updated_at = now()
-        WHERE id = $1 AND user_id = $2
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        WHERE id = ?1 AND user_id = ?2
           AND status IN ('queued', 'upload', 'matting', 'cartoon', 'seedream', 'pixel')
         "#,
     )
@@ -306,7 +308,7 @@ enum Finish {
 }
 
 async fn finish_peek(state: &AppState, job_id: Uuid) -> Option<String> {
-    sqlx::query_scalar("SELECT status FROM generation_jobs WHERE id = $1")
+    sqlx::query_scalar("SELECT status FROM generation_jobs WHERE id = ?1")
         .bind(job_id)
         .fetch_optional(&state.db)
         .await
@@ -341,13 +343,17 @@ async fn finish(
     let tag_value = json!(tags);
     let matted_saved = matted_key;
 
-    let mut tx = state
+    let mut conn = state
         .db
-        .begin()
+        .acquire()
+        .await
+        .map_err(|err| db_fail("pixel", err))?;
+    let mut tx = conn
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|err| db_fail("pixel", err))?;
     let status: String =
-        sqlx::query_scalar("SELECT status FROM generation_jobs WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT status FROM generation_jobs WHERE id = ?1")
             .bind(row.id)
             .fetch_one(&mut *tx)
             .await
@@ -375,11 +381,11 @@ async fn finish(
             pipeline, provider, matted_key, cartoon_key, pipeline_tags
         )
         VALUES (
-            $1,$2,$3,$4,$5,$6,
-            $7,$8,$9,$10,$11,
+            ?1,?2,?3,?4,?5,?6,
+            ?7,?8,?9,?10,?11,
             FALSE, FALSE,
-            $12,$13,$14,$15,
-            'mvp_plus',$16,$17,$18,$19
+            ?12,?13,?14,?15,
+            'mvp_plus',?16,?17,?18,?19
         )
         "#,
     )
@@ -389,7 +395,7 @@ async fn finish(
     .bind(row.board_size)
     .bind(actual)
     .bind(peg)
-    .bind(&palette)
+    .bind(Json(&palette))
     .bind(&pattern.cells)
     .bind(preview_key)
     .bind(original_key)
@@ -401,7 +407,7 @@ async fn finish(
     .bind(&row.provider)
     .bind(&matted_saved)
     .bind(cartoon_key)
-    .bind(&tag_value)
+    .bind(Json(&tag_value))
     .execute(&mut *tx)
     .await
     .map_err(|err| db_fail("pixel", err))?;
@@ -421,12 +427,12 @@ async fn finish(
         UPDATE generation_jobs
         SET status = 'done',
             progress = 100,
-            message = $2,
-            draft_id = $3,
-            balance_after = $4,
-            preview_key = $5,
-            updated_at = now()
-        WHERE id = $1
+            message = ?2,
+            draft_id = ?3,
+            balance_after = ?4,
+            preview_key = ?5,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        WHERE id = ?1
         "#,
     )
     .bind(row.id)
@@ -514,8 +520,8 @@ async fn advance(
     let updated = sqlx::query(
         r#"
         UPDATE generation_jobs
-        SET status = $2, progress = $3, message = $4, updated_at = now()
-        WHERE id = $1 AND status NOT IN ('cancelled', 'failed', 'done')
+        SET status = ?2, progress = ?3, message = ?4, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        WHERE id = ?1 AND status NOT IN ('cancelled', 'failed', 'done')
         "#,
     )
     .bind(job_id)
@@ -531,13 +537,13 @@ async fn advance(
 async fn set_key(state: &AppState, job_id: Uuid, column: &str, key: &str) -> Result<bool, Fail> {
     let sql = match column {
         "matted_key" => {
-            "UPDATE generation_jobs SET matted_key = $2, updated_at = now() WHERE id = $1 AND status NOT IN ('cancelled', 'failed', 'done')"
+            "UPDATE generation_jobs SET matted_key = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1 AND status NOT IN ('cancelled', 'failed', 'done')"
         }
         "cartoon_key" => {
-            "UPDATE generation_jobs SET cartoon_key = $2, updated_at = now() WHERE id = $1 AND status NOT IN ('cancelled', 'failed', 'done')"
+            "UPDATE generation_jobs SET cartoon_key = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1 AND status NOT IN ('cancelled', 'failed', 'done')"
         }
         "preview_key" => {
-            "UPDATE generation_jobs SET preview_key = $2, updated_at = now() WHERE id = $1 AND status NOT IN ('cancelled', 'failed', 'done')"
+            "UPDATE generation_jobs SET preview_key = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1 AND status NOT IN ('cancelled', 'failed', 'done')"
         }
         _ => {
             return Err(fail("pixel", "出稿失败，请稍后重试。本次未扣积分。"));
@@ -557,12 +563,12 @@ async fn mark_failed(state: &AppState, job_id: Uuid, fail: Fail) -> AppResult<()
         r#"
         UPDATE generation_jobs
         SET status = 'failed',
-            failed_stage = $2,
-            error_message = $3,
-            message = $3,
-            error_code = $4,
-            updated_at = now()
-        WHERE id = $1 AND status NOT IN ('done', 'cancelled', 'failed')
+            failed_stage = ?2,
+            error_message = ?3,
+            message = ?3,
+            error_code = ?4,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        WHERE id = ?1 AND status NOT IN ('done', 'cancelled', 'failed')
         "#,
     )
     .bind(job_id)
@@ -601,7 +607,7 @@ async fn load_job(state: &AppState, job_id: Uuid) -> AppResult<JobRow> {
                original_key, matted_key, cartoon_key, preview_key,
                draft_id, balance_after
         FROM generation_jobs
-        WHERE id = $1
+        WHERE id = ?1
         "#,
     )
     .bind(job_id)

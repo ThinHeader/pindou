@@ -130,22 +130,22 @@ async fn save_profile(
 async fn load(state: &AppState, user_id: Uuid) -> AppResult<MeResponse> {
     let user = auth::get_user(&state.db, user_id).await?;
     let drafts_n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM drafts WHERE user_id = $1 AND is_official = FALSE",
+        "SELECT COUNT(*) FROM drafts WHERE user_id = ?1 AND is_official = FALSE",
     )
     .bind(user_id)
     .fetch_one(&state.db)
     .await?;
-    let works_n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM works WHERE user_id = $1")
+    let works_n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM works WHERE user_id = ?1")
         .bind(user_id)
         .fetch_one(&state.db)
         .await?;
     let fav_drafts: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM draft_favorites WHERE user_id = $1")
+        sqlx::query_scalar("SELECT COUNT(*) FROM draft_favorites WHERE user_id = ?1")
             .bind(user_id)
             .fetch_one(&state.db)
             .await?;
     let fav_works: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM work_favorites WHERE user_id = $1")
+        sqlx::query_scalar("SELECT COUNT(*) FROM work_favorites WHERE user_id = ?1")
             .bind(user_id)
             .fetch_one(&state.db)
             .await?;

@@ -1,6 +1,6 @@
 # 拼豆（pindou）
 
-微信小程序「拼豆」可运行 MVP：uni-app Vue3 + TypeScript + Pinia，Rust axum + PostgreSQL。
+微信小程序「拼豆」可运行 MVP：uni-app Vue3 + TypeScript + Pinia，Rust axum + SQLite（本地单文件，无需独立数据库服务）。
 
 拍照或选一张图，按 52 / 78 / 104 珠板和色数生成色号稿。出稿时可以起名，之后能改名。积分规则是成功出稿 −1、激励广告每天 +1。底部是首页、教程、出稿、稿件库、我的；教程是官方只读内容。作品发布、点赞和评论已关闭。
 
@@ -10,7 +10,6 @@
 
 ```
 README.md
-docker-compose.yml          # postgres:16
 rust-toolchain.toml         # Rust 1.99
 apps/mini/                  # uni-app 小程序
 apps/api/                   # axum API、SQL migration、集成测试
@@ -27,17 +26,17 @@ docs/api.md                 # 接口说明
 
 没有每日免费领取。广告位 ID 配在小程序 `VITE_REWARD_AD_UNIT_ID`（见 `apps/mini/.env.example`），留空时不会发积分。
 
-## 1. 起数据库
+## 1. 数据库
 
-需要 Docker。
+本地 SQLite 单文件，不用装数据库服务。默认落在 `apps/api/data/pindou.db`，
+连接串写在 `.env` 的 `DATABASE_URL`：
 
-```bash
-docker compose up -d
+```
+DATABASE_URL=sqlite://./data/pindou.db
 ```
 
-- Postgres：`127.0.0.1:5432`，用户 / 密码 / 库 `pindou` / `pindou_dev` / `pindou`
-
-没有 Docker 时，本机装同版本的 PostgreSQL 16，建同样的账号即可。
+进程启动时自动建目录、建库（WAL 模式）并跑 `apps/api/migrations/` 里的 SQL。
+旧的 Postgres 版迁移留在 `apps/api/migrations_pg/` 只作对照，不再执行。
 
 ## 2. 起 API
 
@@ -135,7 +134,7 @@ Flash 大约 ¥0.12 / 张（约数）。MVP 只用 Flash，没有更高档的「
 
 ## 3. 测试
 
-Postgres 要先起来（和 `cargo run` 同一套 `DATABASE_URL`）。
+用和 `cargo run` 同一套 `DATABASE_URL`（SQLite，会直接写进同一个库文件；想隔离可以改成 `sqlite://./data/test.db`）。
 
 ```bash
 cd apps/api

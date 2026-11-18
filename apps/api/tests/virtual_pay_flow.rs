@@ -304,8 +304,8 @@ async fn user_token(state: &pindou_api::AppState, openid: &str, with_session: bo
     let user_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO users (openid, nickname)
-        VALUES ($1, '拼豆玩家')
-        ON CONFLICT (openid) DO UPDATE SET updated_at = now()
+        VALUES (?1, '拼豆玩家')
+        ON CONFLICT (openid) DO UPDATE SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
         RETURNING id
         "#,
     )
@@ -316,7 +316,7 @@ async fn user_token(state: &pindou_api::AppState, openid: &str, with_session: bo
     sqlx::query(
         r#"
         INSERT INTO credit_accounts (user_id, balance)
-        VALUES ($1, 0)
+        VALUES (?1, 0)
         ON CONFLICT (user_id) DO NOTHING
         "#,
     )
@@ -339,7 +339,7 @@ async fn balance(app: &axum::Router, token: &str) -> i64 {
 async fn seal_session(state: &pindou_api::AppState, openid: &str) {
     let enc = pindou_api::seal_session_key_for_tests(&state.config.jwt_secret, SESSION).unwrap();
     assert!(!enc.contains(SESSION));
-    sqlx::query("UPDATE users SET wx_session_key_enc = $1 WHERE openid = $2")
+    sqlx::query("UPDATE users SET wx_session_key_enc = ?1 WHERE openid = ?2")
         .bind(enc)
         .bind(openid)
         .execute(&state.db)
@@ -706,13 +706,13 @@ async fn ops_refund_claws_back_once() {
 
     let (second_id, _) = pay_virtual(&app, &fake, &token).await;
     assert_eq!(balance(&app, &token).await, 20);
-    sqlx::query("UPDATE credit_orders SET status = 'created', paid_at = NULL WHERE id = $1")
+    sqlx::query("UPDATE credit_orders SET status = 'created', paid_at = NULL WHERE id = ?1")
         .bind(Uuid::parse_str(&second_id).unwrap())
         .execute(&state.db)
         .await
         .unwrap();
     sqlx::query(
-        "UPDATE credit_accounts SET balance = balance - 10 WHERE user_id = (SELECT id FROM users WHERE openid = $1)",
+        "UPDATE credit_accounts SET balance = balance - 10 WHERE user_id = (SELECT id FROM users WHERE openid = ?1)",
     )
     .bind(&code)
     .execute(&state.db)
@@ -744,7 +744,7 @@ async fn ops_refund_claws_back_once() {
     let (third_id, _) = pay_virtual(&app, &fake, &token).await;
     assert_eq!(balance(&app, &token).await, 10);
     sqlx::query(
-        "UPDATE credit_accounts SET balance = 3 WHERE user_id = (SELECT id FROM users WHERE openid = $1)",
+        "UPDATE credit_accounts SET balance = 3 WHERE user_id = (SELECT id FROM users WHERE openid = ?1)",
     )
     .bind(&code)
     .execute(&state.db)

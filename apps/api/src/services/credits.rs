@@ -7,7 +7,7 @@
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{Connection, SqlitePool};
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -203,9 +203,10 @@ pub async fn view(state: &AppState, user_id: Uuid) -> AppResult<CreditsView> {
 /// 看完激励广告后领取。先由客户端播完，再记一笔；同一东八区自然日只成功一次。
 pub async fn ad_reward(state: &AppState, user_id: Uuid) -> AppResult<CreditMutation> {
     let day = china_today();
-    let mut tx = state.db.begin().await?;
+    let mut conn = state.db.acquire().await?;
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
     let inserted = sqlx::query(
-        "INSERT INTO daily_claims (user_id, claim_date) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "INSERT INTO daily_claims (user_id, claim_date) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
     )
     .bind(user_id)
     .bind(day)
@@ -226,15 +227,15 @@ pub async fn ad_reward(state: &AppState, user_id: Uuid) -> AppResult<CreditMutat
     })
 }
 
-pub async fn ledger(pool: &PgPool, user_id: Uuid, limit: i64) -> AppResult<Vec<LedgerItem>> {
+pub async fn ledger(pool: &SqlitePool, user_id: Uuid, limit: i64) -> AppResult<Vec<LedgerItem>> {
     let limit = limit.clamp(1, 50);
     let rows = sqlx::query_as::<_, LedgerRow>(
         r#"
         SELECT id, delta, balance_after, reason, created_at
         FROM credit_ledger
-        WHERE user_id = $1
+        WHERE user_id = ?1
         ORDER BY created_at DESC
-        LIMIT $2
+        LIMIT ?2
         "#,
     )
     .bind(user_id)
@@ -342,7 +343,7 @@ async fn insert_created(
             id, user_id, pack_code, credits, price_cents, amount_fen, status,
             out_trade_no, payer_openid, pay_channel
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'created', $7, $8, $9)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?8, ?9)
         "#,
     )
     .bind(id)
@@ -385,7 +386,8 @@ pub async fn mock_pay(
     if !matches!(checkout_mode(&state.config), Checkout::Mock) {
         return Err(AppError::Forbidden("开发示意到账已关闭".into()));
     }
-    let mut tx = state.db.begin().await?;
+    let mut conn = state.db.acquire().await?;
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
     let row = lock_order_by_id(&mut tx, order_id).await?;
     if row.user_id != user_id {
         return Err(AppError::Forbidden("不能支付别人的订单".into()));
@@ -427,7 +429,8 @@ async fn apply_wechat_payment_once(
         return Err(AppError::BadRequest("支付尚未成功".into()));
     }
 
-    let mut tx = state.db.begin().await?;
+    let mut conn = state.db.acquire().await?;
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
     let row = lock_order_by_trade_no(&mut tx, &notice.out_trade_no).await?;
     if row.pay_channel != "wechat" {
         return Err(AppError::BadRequest("订单不是微信支付单".into()));
@@ -463,7 +466,7 @@ async fn apply_wechat_payment_once(
 }
 
 async fn confirm_already_paid(state: &AppState, notice: &VerifiedTransaction) -> AppResult<()> {
-    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE out_trade_no = $1");
+    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE out_trade_no = ?1");
     let row = sqlx::query_as::<_, OrderRow>(&sql)
         .bind(&notice.out_trade_no)
         .fetch_optional(&state.db)
@@ -675,7 +678,8 @@ async fn apply_virtual_grant_once(state: &AppState, grant: &VirtualGrant) -> App
     if grant.transaction_id.is_empty() {
         return Err(AppError::BadRequest("缺少支付单号".into()));
     }
-    let mut tx = state.db.begin().await?;
+    let mut conn = state.db.acquire().await?;
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
     let row = lock_order_by_trade_no(&mut tx, &grant.out_trade_no).await?;
     if row.pay_channel != "virtual" {
         return Err(AppError::BadRequest("订单不是虚拟支付单".into()));
@@ -986,7 +990,8 @@ fn refundable_fee(payment: &CashLookup, amount_fen: i64) -> AppResult<i64> {
 }
 
 async fn ensure_refunding(state: &AppState, order_id: Uuid) -> AppResult<OrderRow> {
-    let mut tx = state.db.begin().await?;
+    let mut conn = state.db.acquire().await?;
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
     let row = lock_order_by_id(&mut tx, order_id).await?;
     if row.status == "refunded" || (row.status == "refunding" && row.refund_order_id.is_some()) {
         tx.commit().await?;
@@ -999,8 +1004,8 @@ async fn ensure_refunding(state: &AppState, order_id: Uuid) -> AppResult<OrderRo
     sqlx::query(
         r#"
         UPDATE credit_orders
-        SET status = 'refunding', refund_order_id = $2
-        WHERE id = $1 AND status IN ('paid', 'refunding')
+        SET status = 'refunding', refund_order_id = ?2
+        WHERE id = ?1 AND status IN ('paid', 'refunding')
         "#,
     )
     .bind(order_id)
@@ -1016,7 +1021,7 @@ async fn reopen_paid(state: &AppState, order_id: Uuid) -> AppResult<()> {
         r#"
         UPDATE credit_orders
         SET status = 'paid', refund_order_id = NULL
-        WHERE id = $1 AND status = 'refunding'
+        WHERE id = ?1 AND status = 'refunding'
         "#,
     )
     .bind(order_id)
@@ -1076,7 +1081,8 @@ async fn clawback_refund_once(
     order_id: Uuid,
     refund_order_id: Option<&str>,
 ) -> AppResult<ClawResult> {
-    let mut tx = state.db.begin().await?;
+    let mut conn = state.db.acquire().await?;
+    let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
     let row = lock_order_by_id(&mut tx, order_id).await?;
     if row.status == "refunded" {
         let balance = balance_of_tx(&mut tx, row.user_id).await?;
@@ -1095,9 +1101,9 @@ async fn clawback_refund_once(
         r#"
         UPDATE credit_orders
         SET status = 'refunded',
-            refunded_at = now(),
-            refund_order_id = COALESCE($2, refund_order_id)
-        WHERE id = $1 AND status IN ('paid', 'refunding')
+            refunded_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+            refund_order_id = COALESCE(?2, refund_order_id)
+        WHERE id = ?1 AND status IN ('paid', 'refunding')
         "#,
     )
     .bind(order_id)
@@ -1160,8 +1166,8 @@ async fn refund_view(
     })
 }
 
-async fn order_by_refund_id(pool: &PgPool, refund_order_id: &str) -> AppResult<OrderRow> {
-    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE refund_order_id = $1");
+async fn order_by_refund_id(pool: &SqlitePool, refund_order_id: &str) -> AppResult<OrderRow> {
+    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE refund_order_id = ?1");
     sqlx::query_as::<_, OrderRow>(&sql)
         .bind(refund_order_id)
         .fetch_optional(pool)
@@ -1171,7 +1177,7 @@ async fn order_by_refund_id(pool: &PgPool, refund_order_id: &str) -> AppResult<O
 
 async fn load_session_key(state: &AppState, user_id: Uuid) -> AppResult<String> {
     let stored: Option<Option<String>> =
-        sqlx::query_scalar("SELECT wx_session_key_enc FROM users WHERE id = $1")
+        sqlx::query_scalar("SELECT wx_session_key_enc FROM users WHERE id = ?1")
             .bind(user_id)
             .fetch_optional(&state.db)
             .await?;
@@ -1185,7 +1191,7 @@ async fn load_session_key(state: &AppState, user_id: Uuid) -> AppResult<String> 
 }
 
 async fn credit_locked_order(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     row: &OrderRow,
     transaction_id: Option<&str>,
 ) -> AppResult<(i32, i32)> {
@@ -1196,8 +1202,8 @@ async fn credit_locked_order(
     let updated = sqlx::query(
         r#"
         UPDATE credit_orders
-        SET status = 'paid', paid_at = now(), transaction_id = $2
-        WHERE id = $1 AND status = 'created'
+        SET status = 'paid', paid_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), transaction_id = ?2
+        WHERE id = ?1 AND status = 'created'
         "#,
     )
     .bind(row.id)
@@ -1221,7 +1227,7 @@ async fn credit_locked_order(
 }
 
 pub async fn apply_delta_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     user_id: Uuid,
     delta: i32,
     reason: &str,
@@ -1235,7 +1241,7 @@ pub async fn apply_delta_tx(
         )));
     }
     let next = current + delta;
-    sqlx::query("UPDATE credit_accounts SET balance = $2, updated_at = now() WHERE user_id = $1")
+    sqlx::query("UPDATE credit_accounts SET balance = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE user_id = ?1")
         .bind(user_id)
         .bind(next)
         .execute(&mut **tx)
@@ -1243,7 +1249,7 @@ pub async fn apply_delta_tx(
     sqlx::query(
         r#"
         INSERT INTO credit_ledger (user_id, delta, balance_after, reason, ref_id)
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
     )
     .bind(user_id)
@@ -1257,9 +1263,9 @@ pub async fn apply_delta_tx(
     Ok(next)
 }
 
-async fn balance_of(pool: &PgPool, user_id: Uuid) -> AppResult<i32> {
+async fn balance_of(pool: &SqlitePool, user_id: Uuid) -> AppResult<i32> {
     let balance: Option<i32> =
-        sqlx::query_scalar("SELECT balance FROM credit_accounts WHERE user_id = $1")
+        sqlx::query_scalar("SELECT balance FROM credit_accounts WHERE user_id = ?1")
             .bind(user_id)
             .fetch_optional(pool)
             .await?;
@@ -1267,20 +1273,20 @@ async fn balance_of(pool: &PgPool, user_id: Uuid) -> AppResult<i32> {
 }
 
 async fn balance_of_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     user_id: Uuid,
 ) -> AppResult<i32> {
     let balance: Option<i32> =
-        sqlx::query_scalar("SELECT balance FROM credit_accounts WHERE user_id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT balance FROM credit_accounts WHERE user_id = ?1")
             .bind(user_id)
             .fetch_optional(&mut **tx)
             .await?;
     balance.ok_or_else(|| AppError::NotFound("积分账户不存在".into()))
 }
 
-async fn claimed_today(pool: &PgPool, user_id: Uuid, day: NaiveDate) -> AppResult<bool> {
+async fn claimed_today(pool: &SqlitePool, user_id: Uuid, day: NaiveDate) -> AppResult<bool> {
     let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM daily_claims WHERE user_id = $1 AND claim_date = $2)",
+        "SELECT EXISTS(SELECT 1 FROM daily_claims WHERE user_id = ?1 AND claim_date = ?2)",
     )
     .bind(user_id)
     .bind(day)
@@ -1325,8 +1331,8 @@ fn format_fen(fen: i32) -> String {
     }
 }
 
-async fn user_openid(pool: &PgPool, user_id: Uuid) -> AppResult<String> {
-    let openid: Option<String> = sqlx::query_scalar("SELECT openid FROM users WHERE id = $1")
+async fn user_openid(pool: &SqlitePool, user_id: Uuid) -> AppResult<String> {
+    let openid: Option<String> = sqlx::query_scalar("SELECT openid FROM users WHERE id = ?1")
         .bind(user_id)
         .fetch_optional(pool)
         .await?;
@@ -1337,8 +1343,8 @@ async fn user_openid(pool: &PgPool, user_id: Uuid) -> AppResult<String> {
     Ok(openid)
 }
 
-async fn order_by_trade_no(pool: &PgPool, out_trade_no: &str) -> AppResult<OrderRow> {
-    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE out_trade_no = $1");
+async fn order_by_trade_no(pool: &SqlitePool, out_trade_no: &str) -> AppResult<OrderRow> {
+    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE out_trade_no = ?1");
     sqlx::query_as::<_, OrderRow>(&sql)
         .bind(out_trade_no)
         .fetch_optional(pool)
@@ -1346,8 +1352,8 @@ async fn order_by_trade_no(pool: &PgPool, out_trade_no: &str) -> AppResult<Order
         .ok_or_else(|| AppError::NotFound("订单不存在".into()))
 }
 
-async fn order_by_id(pool: &PgPool, order_id: Uuid) -> AppResult<OrderRow> {
-    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE id = $1");
+async fn order_by_id(pool: &SqlitePool, order_id: Uuid) -> AppResult<OrderRow> {
+    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE id = ?1");
     sqlx::query_as::<_, OrderRow>(&sql)
         .bind(order_id)
         .fetch_optional(pool)
@@ -1356,10 +1362,10 @@ async fn order_by_id(pool: &PgPool, order_id: Uuid) -> AppResult<OrderRow> {
 }
 
 async fn lock_order_by_id(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     order_id: Uuid,
 ) -> AppResult<OrderRow> {
-    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE id = $1 FOR UPDATE");
+    let sql = format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE id = ?1");
     sqlx::query_as::<_, OrderRow>(&sql)
         .bind(order_id)
         .fetch_optional(&mut **tx)
@@ -1369,11 +1375,11 @@ async fn lock_order_by_id(
 }
 
 async fn lock_order_by_trade_no(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     out_trade_no: &str,
 ) -> AppResult<OrderRow> {
     let sql =
-        format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE out_trade_no = $1 FOR UPDATE");
+        format!("SELECT {ORDER_COLUMNS} FROM credit_orders WHERE out_trade_no = ?1");
     sqlx::query_as::<_, OrderRow>(&sql)
         .bind(out_trade_no)
         .fetch_optional(&mut **tx)
@@ -1383,8 +1389,9 @@ async fn lock_order_by_trade_no(
 }
 
 fn map_sqlx(err: sqlx::Error) -> AppError {
+    // 唯一约束冲突：Postgres 是 SQLSTATE 23505，SQLite 是 UNIQUE constraint failed。
     if let sqlx::Error::Database(db) = &err {
-        if db.code().as_deref() == Some("23505") {
+        if db.kind() == sqlx::error::ErrorKind::UniqueViolation {
             return AppError::conflict("duplicate_payment", "重复的支付通知");
         }
     }
@@ -1418,7 +1425,7 @@ struct OrderRow {
 
 /// 锁内读取余额。供出稿事务复用。
 pub async fn lock_balance(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     user_id: Uuid,
 ) -> AppResult<i32> {
     balance_of_tx(tx, user_id).await
